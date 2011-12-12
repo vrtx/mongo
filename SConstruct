@@ -990,8 +990,8 @@ def doConfigure( myenv , shell=False ):
         else:
             myCheckLib( "v8" , True )
 
-     if uselua:
-         myCheckLib( "luajit" , True )
+    if uselua:
+        myCheckLib( "luajit" , True )
 
     # requires ports devel/libexecinfo to be installed
     if freebsd or openbsd:
