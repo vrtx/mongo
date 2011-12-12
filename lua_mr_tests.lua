@@ -12,12 +12,11 @@
 
 // run a mr job
 
-// lua mapper and js reducer
+// lua mapper with js reducer
 use test_giant
-// m = "print('testing iteration: '..iter)";
-m = "";
-r = function( key , values ){
+m = "print('testing iteration: '..iter)";
+r = function( key , values )
+{
     return { 'test': 'test' };
 };
 db.giant_test.mapReduce(m, r, {out:{replace:"test_merged"} } );
-// db.med_test.mapReduce(m, r, {out:{replace:"test_merged"} } );
