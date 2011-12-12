@@ -216,6 +216,56 @@ namespace mongo {
             _reduce( x , key , endSizeEstimate );
         }
 
+        // lua-based map ctor
+        LuaMapper::LuaMapper(const BSONElement & luaCode)
+        {
+            _luaState = luaL_newstate(); // initialize a new lua state
+            luaL_openlibs(_luaState);    // load std lua functions (for debugging)
+
+            // get the map value from the BSON object
+            _code = luaCode.str();
+
+            // push in any global variables or functions
+            // TODO: push emit() wrapper
+            log(1) << "loaded the lua map function: " << _code << endl;
+            
+        }
+
+        // initialize the mapper function
+        void LuaMapper::init( State * state ) {
+            _mongoScope = state->scope();
+            _params = state->config().mapParams;
+        }
+
+        /**
+         * Applies the map function to an object, which should internally call emit()
+         */
+        void LuaMapper::map( const BSONObj& o ) {
+            int luaRes = 0;
+            static int count = 0;
+            lua_pushinteger(_luaState, count);
+            lua_setglobal(_luaState, "iter");
+
+            // push 'o' as 'doc' global
+            // TODO: left off here.
+            //       set 'doc' global
+            //       create wrapper for emit()
+            //       implement reducer
+            //       implement finalizer
+
+            // push the map function onto the top of the stack
+            luaL_loadstring(_luaState, _code.c_str());
+
+            // call mapper fn (with 0 args, and returning multiple values)
+            // log(1) << "about to execute lua script: " << _code << endl;
+            if ((luaRes = lua_pcall(_luaState, 0, 0, 0)) != 0)
+                throw UserException( -9014, str::stream() << "Lua mapper failed to execute script '" 
+                                                          << _code << "' for document '" << o 
+                                                          << "'.  Reason: " << lua_tostring(_luaState, -1) 
+                                                          << " (lua runtime error " << luaRes << ").");
+            ++count;
+        }
+
         Config::Config( const string& _dbname , const BSONObj& cmdObj ) {
 
             dbname = _dbname;
@@ -290,7 +340,15 @@ namespace mongo {
                 if ( cmdObj["scope"].type() == Object )
                     scopeSetup = cmdObj["scope"].embeddedObjectUserCheck();
 
+#ifdef USE_LUA
+                mapper.reset( new LuaMapper( cmdObj["map"] ) );
+                // BB TODO: implement lua reducer and finalizer
+                // reducer.reset( new LuaReducer( cmdObj["reduce"] ) );
+                // if ( cmdObj["finalize"].type() && cmdObj["finalize"].trueValue() )
+                //     finalizer.reset( new JSFinalizer( cmdObj["finalize"] ) );
+#else
                 mapper.reset( new JSMapper( cmdObj["map"] ) );
+#endif
                 reducer.reset( new JSReducer( cmdObj["reduce"] ) );
                 if ( cmdObj["finalize"].type() && cmdObj["finalize"].trueValue() )
                     finalizer.reset( new JSFinalizer( cmdObj["finalize"] ) );
@@ -1048,54 +1106,57 @@ namespace mongo {
                         uassert( 15877, str::stream() << "could not create client cursor over " << config.ns << " for query : " << config.filter << " sort : " << config.sort, cursor.get() );
 
                         Timer mt;
-                        // go through each doc
-                        while ( cursor->ok() ) {
-                            if ( ! cursor->currentMatches() ) {
-                                cursor->advance();
-                                continue;
-                            }
 
-                            // make sure we dont process duplicates in case data gets moved around during map
-                            // TODO This won't actually help when data gets moved, it's to handle multikeys.
-                            if ( cursor->currentIsDup() ) {
-                                cursor->advance();
-                                continue;
-                            }
-                                                        
-                            BSONObj o = cursor->current();
-                            cursor->advance();
-
-                            // check to see if this is a new object we don't own yet
-                            // because of a chunk migration
-                            if ( chunkManager && ! chunkManager->belongsToMe( o ) )
-                                continue;
-
-                            // do map
-                            if ( config.verbose ) mt.reset();
-                            config.mapper->map( o );
-                            if ( config.verbose ) mapTime += mt.micros();
-
-                            num++;
-                            if ( num % 1000 == 0 ) {
-                                // try to yield lock regularly
-                                ClientCursor::YieldLock yield (cursor.get());
-                                Timer t;
-                                // check if map needs to be dumped to disk
-                                state.checkSize();
-                                inReduce += t.micros();
-
-                                if ( ! yield.stillOk() ) {
-                                    cursor.release();
-                                    break;
+                        EST_CYCLE_COUNT("Run Map Reduce", {
+                            // go through each doc
+                            while ( cursor->ok() ) {
+                                if ( ! cursor->currentMatches() ) {
+                                    cursor->advance();
+                                    continue;
                                 }
 
-                                killCurrentOp.checkForInterrupt();
-                            }
-                            pm.hit();
+                                // make sure we dont process duplicates in case data gets moved around during map
+                                // TODO This won't actually help when data gets moved, it's to handle multikeys.
+                                if ( cursor->currentIsDup() ) {
+                                    cursor->advance();
+                                    continue;
+                                }
+                                                        
+                                BSONObj o = cursor->current();
+                                cursor->advance();
 
-                            if ( config.limit && num >= config.limit )
-                                break;
-                        }
+                                // check to see if this is a new object we don't own yet
+                                // because of a chunk migration
+                                if ( chunkManager && ! chunkManager->belongsToMe( o ) )
+                                    continue;
+
+                                // do map
+                                if ( config.verbose ) mt.reset();
+                                config.mapper->map( o );
+                                if ( config.verbose ) mapTime += mt.micros();
+
+                                num++;
+                                if ( num % 1000 == 0 ) {
+                                    // try to yield lock regularly
+                                    ClientCursor::YieldLock yield (cursor.get());
+                                    Timer t;
+                                    // check if map needs to be dumped to disk
+                                    state.checkSize();
+                                    inReduce += t.micros();
+
+                                    if ( ! yield.stillOk() ) {
+                                        cursor.release();
+                                        break;
+                                    }
+
+                                    killCurrentOp.checkForInterrupt();
+                                }
+                                pm.hit();
+
+                                if ( config.limit && num >= config.limit )
+                                    break;
+                            }
+                        });
                     }
                     pm.finished();
 

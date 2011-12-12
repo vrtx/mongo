@@ -23,6 +23,28 @@
 
 namespace mongo {
 
+    // get the value of the time-stamp counter
+    static inline uint64_t rdtsc()
+    {
+        uint32_t upper, lower;
+        asm volatile("rdtsc\n" : "=a"(lower), "=d"(upper));
+        return (uint64_t)upper << 32 | lower;
+    }
+
+    // estiamte the number of cycles for a block of code
+    // NOTE: this function will produce invalid results if the process
+    //       is migrated to another CPU during execution.  it also includes
+    //       the number of cycles taken to allocate 2 uint32_t's on the stack.
+    #define EST_CYCLE_COUNT(name, ...)          \
+        {                                       \
+            uint64_t l_count = 0;               \
+            uint64_t l_start_time = rdtsc();    \
+            /* run the code to count */         \
+            __VA_ARGS__;                        \
+            l_count = (rdtsc() - l_start_time); \
+            log(1) << "PERFORMANCE:  Cycles take to execute " << name << ": " << l_count << endl; \
+        }
+
 // for debugging
     typedef struct _Ints {
         int i[100];

@@ -18,6 +18,7 @@
 #pragma once
 
 #include "pch.h"
+#include "lua.hpp"
 
 namespace mongo {
 
@@ -132,6 +133,46 @@ namespace mongo {
 
         // -----------------
 
+        // ------------  TESTING: Lua function implementations -----------
+
+        class LuaMapper : public Mapper {
+        public:
+            LuaMapper( const BSONElement & luaCode );
+			virtual ~LuaMapper() {
+				log(1) << "destructing lua mapper" << endl;
+			}
+            virtual void map( const BSONObj& o );
+            virtual void init( State * state );
+
+        private:
+            lua_State *_luaState;
+            Scope *_mongoScope;
+            BSONObj _params;
+            string _code;
+        };
+
+        class LuaReducer : public Reducer {
+        public:
+            LuaReducer( const BSONElement& code );
+            virtual void init( State * state );
+            virtual BSONObj reduce( const BSONList& tuples );
+            virtual BSONObj finalReduce( const BSONList& tuples , Finalizer * finalizer );
+
+        private:
+            void _reduce( const BSONList& values , BSONObj& key , int& endSizeEstimate );
+            lua_State *_luaState;
+        };
+
+        class LuaFinalizer : public Finalizer  {
+        public:
+            LuaFinalizer( const BSONElement& code );
+            virtual BSONObj finalize( const BSONObj& o );
+            virtual void init( State * state );
+        private:
+            lua_State *_luaState;
+        };
+
+        // -----------------
 
         class TupleKeyCmp {
         public:

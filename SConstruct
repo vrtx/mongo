@@ -155,6 +155,7 @@ add_option( "ssl" , "Enable SSL" , 0 , True )
 # library choices
 add_option( "usesm" , "use spider monkey for javascript" , 0 , True )
 add_option( "usev8" , "use v8 for javascript" , 0 , True )
+add_option( "uselua" , "use lua for scripting" , 0 , True )
 
 # mongo feature options
 add_option( "noshell", "don't build shell" , 0 , True )
@@ -234,6 +235,7 @@ noshell = has_option( "noshell" )
 
 usesm = has_option( "usesm" )
 usev8 = has_option( "usev8" ) 
+uselua = has_option( "uselua" ) 
 
 asio = has_option( "asio" )
 
@@ -442,6 +444,10 @@ elif usev8:
 else:
     scriptingFiles += [ "scripting/engine_none.cpp" ]
 
+if uselua:
+    scriptingFiles += [ Glob( "scripting/*lua*.cpp" ) ]
+    env.Append( CPPDEFINES=["USE_LUA"] )
+
 coreShardFiles = [ "s/config.cpp" , "s/grid.cpp" , "s/chunk.cpp" , "s/shard.cpp" , "s/shardkey.cpp" ]
 shardServerFiles = coreShardFiles + Glob( "s/strategy*.cpp" ) + [ "s/commands_admin.cpp" , "s/commands_public.cpp" , "s/request.cpp" , "s/client.cpp" , "s/cursors.cpp" ,  "s/server.cpp" , "s/config_migrate.cpp" , "s/s_only.cpp" , "s/stats.cpp" , "s/balance.cpp" , "s/balancer_policy.cpp" , "db/cmdline.cpp" , "s/writeback_listener.cpp" , "s/shard_version.cpp", "s/mr_shard.cpp", "s/security.cpp" ]
 serverOnlyFiles += coreShardFiles + [ "s/d_logic.cpp" , "s/d_writeback.cpp" , "s/d_migrate.cpp" , "s/d_state.cpp" , "s/d_split.cpp" , "client/distlock_test.cpp" , "s/d_chunk_manager.cpp" ]
@@ -534,13 +540,19 @@ if "darwin" == os.sys.platform:
     nix = True
 
     if force64:
-        env.Append( CPPPATH=["/usr/64/include"] )
-        env.Append( LIBPATH=["/usr/64/lib"] )
+        env.Append( CPPPATH=["/usr/local/include"] )
+        env.Append( LIBPATH=["/usr/local/lib"] )
+        # env.Append( CPPPATH=["/usr/64/include"] )
+        # env.Append( LIBPATH=["/usr/64/lib"] )
         if installDir == DEFAULT_INSTALL_DIR and not distBuild:
             installDir = "/usr/64/"
     else:
-        env.Append( CPPPATH=filterExists(["/sw/include" , "/opt/local/include"]) )
-        env.Append( LIBPATH=filterExists(["/sw/lib/", "/opt/local/lib"]) )
+        env.Append( CPPPATH=filterExists(["/sw/include" , "/usr/local/include"]) )
+        env.Append( LIBPATH=filterExists(["/sw/lib/", "/usr/local/lib"]) )
+        # env.Append( CPPPATH=filterExists(["/sw/include" , "/opt/local/include"]) )
+        # env.Append( LIBPATH=filterExists(["/sw/lib/", "/opt/local/lib"]) )
+        # env.Append( CPPPATH=["/opt/local/include"] )    # MacPorts
+        # env.Append( LIBPATH=["/opt/local/lib"] )        # MacPorts
 
 elif os.sys.platform.startswith("linux"):
     linux = True
@@ -790,6 +802,11 @@ if usev8:
     env.Prepend( CPPPATH=["../v8/include/"] )
     env.Prepend( LIBPATH=["../v8/"] )
 
+if uselua:
+    env.Prepend( CPPPATH=["/usr/local/include/lua"] ) # BB TODO: proper lua path
+    env.Prepend( CPPPATH=["/usr/local/include/"] )
+    env.Prepend( LIBPATH=["/usr/local/lib/"] )
+
 if "uname" in dir(os):
     hacks = buildscripts.findHacks( os.uname() )
     if hacks is not None:
@@ -972,6 +989,9 @@ def doConfigure( myenv , shell=False ):
             myCheckLib( [ "v8_g" , "v8" ] , True )
         else:
             myCheckLib( "v8" , True )
+
+     if uselua:
+         myCheckLib( "luajit" , True )
 
     # requires ports devel/libexecinfo to be installed
     if freebsd or openbsd:
