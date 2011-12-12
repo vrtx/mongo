@@ -28,7 +28,6 @@ basicFiles = [ "jsapi.c" ,
                "jsparse.c" ,
                "jsprf.c" ,
                "jsregexp.c" ,
-               "jsscan.c" ,
                "jsscope.c" ,
                "jsscript.c" ,
                "jsstr.c" ,
@@ -38,6 +37,7 @@ basicFiles = [ "jsapi.c" ,
                "prmjtime.c" ]
 
 root = "third_party/js-1.7"
+jsautokwDependencies = ["jsscan.c"] 
 
 def r(x):
     return "%s/%s" % ( root , x )
@@ -80,6 +80,12 @@ def configure( env , fileLists , options ):
 
     fileLists["scriptingFiles"] += [ myenv.Object(root + "/" + f) for f in basicFiles ]
 
+    jsautokwDependenciesObjects = [] 
+    for dependency in jsautokwDependencies: 
+        dependencyObject = myenv.Object(root + "/" + dependency) 
+        jsautokwDependenciesObjects.append(dependencyObject) 
+        fileLists["scriptingFiles"].append(dependencyObject) 
+
     jskwgen = str( myenv.Program( r("jskwgen") , [ r("jskwgen.c") ] )[0] )
     jscpucfg = str( myenv.Program( r("jscpucfg") , [ r("jscpucfg.c") ] )[0] )
 
@@ -101,8 +107,8 @@ def configure( env , fileLists , options ):
     myenv.Append( BUILDERS={ 'Auto' : autoBuilder } )
     myenv.Auto( r("jsautokw.h") , [ jskwgen ] )
     myenv.Auto( r("jsautocfg.h") , [ jscpucfg ] )
-    
-    myenv.Depends( r("jsscan.c") , r("jsautokw.h") )
+    for dependency in jsautokwDependenciesObjects: 
+         myenv.Depends( dependency , r("jsautokw.h") )     
 
 
 def configureSystem( env , fileLists , options ):

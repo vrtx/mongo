@@ -33,8 +33,7 @@ namespace mongo {
 
     // estiamte the number of cycles for a block of code
     // NOTE: this function will produce invalid results if the process
-    //       is migrated to another CPU during execution.  it also includes
-    //       the number of cycles taken to allocate 2 uint32_t's on the stack.
+    //       is migrated to another CPU during execution.
     #define EST_CYCLE_COUNT(name, ...)          \
         {                                       \
             uint64_t l_count = 0;               \
