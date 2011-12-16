@@ -76,6 +76,27 @@ jmathr = function( key , values ) { return {'a':'a'} }; // dummy reducer
 db.giant_test.mapReduce(jmath, jmathr, {out:{replace:"js_test"}, useLua:false });
 
 
+// lua test: 3x4 test of math constnats (testing perf of BSON glue)
+//////////////////////////////////////////
+lstatmath =  "local isum = 1 + 1;";
+lstatmath += "local msum = 1 + 1.01;";
+lstatmath += "local fsum = 1.01 + 1.02;";
+ 
+lstatmath =  "local idiv = 1 / 1;";
+lstatmath += "local mdiv = 1 / 1.01;";
+lstatmath += "local fdiv = 1.01 / 1.02;";
+
+lstatmath =  "local imlt = 1 * 1;";
+lstatmath += "local mmlt = 1 * 1.01;";
+lstatmath += "local fmlt = 1.01 * 1.02;";
+
+lstatmath =  "local isub = 1 - 1;";
+lstatmath += "local msub = 1 - 1.01;";
+lstatmath += "local fsub = 1.01 - 1.02;";
+
+lstatmathr = function( key , values ) { return {'a':'a'} }; // dummy reducer
+db.giant_test.mapReduce(lstatmath, lstatmathr, {out:{replace:"lua_test"}, useLua:true });
+
 
 
 // lua test: concatenate strings
