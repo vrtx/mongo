@@ -1,0 +1,3 @@
+[submodule "luamongo"]
+	path = luamongo
+	url = https://github.com/moai/luamongo.git
