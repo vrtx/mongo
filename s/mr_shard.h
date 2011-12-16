@@ -126,6 +126,7 @@ namespace mongo {
             // options
             bool verbose;
             bool jsMode;
+            bool useLua;
 
             // query options
 

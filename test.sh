@@ -1,4 +1,4 @@
 #!/bin/bash
-./build.sh
-sudo ./mongod -f /etc/mongodb.conf -vvvv
-./mongo test_giant < lua_mr_tests.lua
+sudo ./mongod -f /etc/mongodb.conf -vvvv &
+sleep 2
+./mongo test_giant < lua_mr_tests.js

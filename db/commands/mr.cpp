@@ -33,6 +33,10 @@
 
 #include "mr.h"
 
+// BB TODO: Symbols currently stolen from Lua driver (see git submodule '/luamongo').
+//          Perhaps contribute headers to the project?
+extern void bson_to_lua(lua_State *L, const mongo::BSONObj &obj);
+
 namespace mongo {
 
     namespace mr {
@@ -235,6 +239,9 @@ namespace mongo {
         void LuaMapper::init( State * state ) {
             _mongoScope = state->scope();
             _params = state->config().mapParams;
+            // push the map function onto the top of the stack
+            luaL_loadstring(_luaState, _code.c_str());
+            lua_setfield(_luaState, LUA_GLOBALSINDEX, "mapfn");
         }
 
         /**
@@ -242,28 +249,25 @@ namespace mongo {
          */
         void LuaMapper::map( const BSONObj& o ) {
             int luaRes = 0;
-            static int count = 0;
-            lua_pushinteger(_luaState, count);
-            lua_setglobal(_luaState, "iter");
-
-            // push 'o' as 'doc' global
-            // TODO: left off here.
-            //       set 'doc' global
+            // static int count = 0;
+            // lua_pushinteger(_luaState, count);
+            // lua_setglobal(_luaState, "iter");
+            bson_to_lua(_luaState, o);
+            lua_setglobal(_luaState, "doc");  // set the 'doc' global
+            // TODO:
             //       create wrapper for emit()
             //       implement reducer
             //       implement finalizer
 
-            // push the map function onto the top of the stack
-            luaL_loadstring(_luaState, _code.c_str());
-
-            // call mapper fn (with 0 args, and returning multiple values)
             // log(1) << "about to execute lua script: " << _code << endl;
+            // call mapper fn (with 0 args, and returning 0 values)
+            lua_getfield(_luaState, LUA_GLOBALSINDEX, "mapfn");
             if ((luaRes = lua_pcall(_luaState, 0, 0, 0)) != 0)
                 throw UserException( -9014, str::stream() << "Lua mapper failed to execute script '" 
                                                           << _code << "' for document '" << o 
                                                           << "'.  Reason: " << lua_tostring(_luaState, -1) 
                                                           << " (lua runtime error " << luaRes << ").");
-            ++count;
+            // ++count;
         }
 
         Config::Config( const string& _dbname , const BSONObj& cmdObj ) {
@@ -273,6 +277,8 @@ namespace mongo {
 
             verbose = cmdObj["verbose"].trueValue();
             jsMode = cmdObj["jsMode"].trueValue();
+            useLua = cmdObj["useLua"].trueValue();
+
             splitInfo = 0;
             if (cmdObj.hasField("splitInfo"))
                 splitInfo = cmdObj["splitInfo"].Int();
@@ -339,16 +345,20 @@ namespace mongo {
 
                 if ( cmdObj["scope"].type() == Object )
                     scopeSetup = cmdObj["scope"].embeddedObjectUserCheck();
+                
+                if ( useLua ) {
+                    mapper.reset( new LuaMapper( cmdObj["map"] ) );
 
-#ifdef USE_LUA
-                mapper.reset( new LuaMapper( cmdObj["map"] ) );
-                // BB TODO: implement lua reducer and finalizer
-                // reducer.reset( new LuaReducer( cmdObj["reduce"] ) );
-                // if ( cmdObj["finalize"].type() && cmdObj["finalize"].trueValue() )
-                //     finalizer.reset( new JSFinalizer( cmdObj["finalize"] ) );
-#else
-                mapper.reset( new JSMapper( cmdObj["map"] ) );
-#endif
+                    // BB TODO: implement lua reducer and finalizer
+                    // reducer.reset( new LuaReducer( cmdObj["reduce"] ) );
+                    // if ( cmdObj["finalize"].type() && cmdObj["finalize"].trueValue() )
+                    //     finalizer.reset( new JSFinalizer( cmdObj["finalize"] ) );
+                }
+                else {
+                    mapper.reset( new JSMapper( cmdObj["map"] ) );                    
+                    // BB TODO: move js reducer/finalizer here
+                }
+
                 reducer.reset( new JSReducer( cmdObj["reduce"] ) );
                 if ( cmdObj["finalize"].type() && cmdObj["finalize"].trueValue() )
                     finalizer.reset( new JSFinalizer( cmdObj["finalize"] ) );
@@ -1107,6 +1117,7 @@ namespace mongo {
 
                         Timer mt;
 
+                        uint64_t start_time = curTimeMicros64();
                         EST_CYCLE_COUNT("Run Map Reduce", {
                             // go through each doc
                             while ( cursor->ok() ) {
@@ -1157,6 +1168,7 @@ namespace mongo {
                                     break;
                             }
                         });
+                        log(1) << "PERFORMANCE: Microseconds taken to run MapReduce: " << (curTimeMicros64() - start_time) << endl;
                     }
                     pm.finished();
 

@@ -445,8 +445,10 @@ else:
     scriptingFiles += [ "scripting/engine_none.cpp" ]
 
 if uselua:
-    scriptingFiles += [ Glob( "scripting/*lua*.cpp" ) ]
     env.Append( CPPDEFINES=["USE_LUA"] )
+    # build the luamongo driver bson-related functions statically for now.
+    scriptingFiles += [ "luamongo/mongo_bsontypes.cpp", "luamongo/utils.cpp" ]
+    # scriptingFiles += [ Glob( "scripting/*lua*.cpp" ) ]
 
 coreShardFiles = [ "s/config.cpp" , "s/grid.cpp" , "s/chunk.cpp" , "s/shard.cpp" , "s/shardkey.cpp" ]
 shardServerFiles = coreShardFiles + Glob( "s/strategy*.cpp" ) + [ "s/commands_admin.cpp" , "s/commands_public.cpp" , "s/request.cpp" , "s/client.cpp" , "s/cursors.cpp" ,  "s/server.cpp" , "s/config_migrate.cpp" , "s/s_only.cpp" , "s/stats.cpp" , "s/balance.cpp" , "s/balancer_policy.cpp" , "db/cmdline.cpp" , "s/writeback_listener.cpp" , "s/shard_version.cpp", "s/mr_shard.cpp", "s/security.cpp" ]
@@ -1530,7 +1532,7 @@ env.Alias( "core" , [ add_exe( "mongo" ) , add_exe( "mongod" ) , add_exe( "mongo
 
 #headers
 if installSetup.headers:
-    for id in [ "", "util/", "util/net/", "util/mongoutils/", "util/concurrency/", "db/" , "db/stats/" , "db/repl/" , "db/ops/" , "client/" , "bson/", "bson/util/" , "s/" , "scripting/" ]:
+    for id in [ "", "util/", "util/net/", "util/mongoutils/", "util/concurrency/", "db/" , "db/stats/" , "db/repl/" , "db/ops/" , "client/" , "bson/", "bson/util/" , "s/" , "scripting/"]:
         env.Install( installDir + "/" + installSetup.headerRoot + "/mongo/" + id , Glob( id + "*.h" ) )
         env.Install( installDir + "/" + installSetup.headerRoot + "/mongo/" + id , Glob( id + "*.hpp" ) )
 

@@ -195,6 +195,7 @@ namespace mongo {
 
             verbose = cmdObj["verbose"].trueValue();
             jsMode = cmdObj["jsMode"].trueValue();
+            useLua = cmdObj["useLua"].trueValue();
 
             jsMaxKeys = 500000;
             reduceTriggerRatio = 2.0;
