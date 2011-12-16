@@ -78,27 +78,20 @@ db.giant_test.mapReduce(jmath, jmathr, {out:{replace:"js_test"}, useLua:false })
 
 
 
-// lua test: 3x4 test of math constnats (testing perf of BSON glue)
+// lua test: concatenate strings
 //////////////////////////////////////////
-lmath =  "local isum = 1 + 1;";
-lmath += "local msum = 1 + 1.01;";
-lmath += "local fsum = 1.01 + 1.02;";
+lconcat =  "local s_concat = doc.data1 .. doc.data2;";
+lconcatr = function( key , values ) { return {'a':'a'} }; // dummy reducer
+db.small_test.mapReduce(lconcat, lconcatr, {out:{replace:"lua_test"}, useLua:true });
 
-lmath =  "local idiv = 1 / 1;";
-lmath += "local mdiv = 1 / 1.01;";
-lmath += "local fdiv = 1.01 / 1.02;";
 
-lmath =  "local imlt = 1 * 1;";
-lmath += "local mmlt = 1 * 1.01;";
-lmath += "local fmlt = 1.01 * 1.02;";
-
-lmath =  "local isub = 1 - 1;";
-lmath += "local msub = 1 - 1.01;";
-lmath += "local fsub = 1.01 - 1.02;";
-
-lmathr = function( key , values ) { return {'a':'a'} }; // dummy reducer
-db.giant_test.mapReduce(lmath, lmathr, {out:{replace:"lua_test"}, useLua:true });
-
+// js test: concatenate strings
+//////////////////////////////////
+jconcat = function() {
+    var s_concat = this.data1 + this.data2;
+}
+jconcatr = function( key , values ) { return {'a':'a'} }; // dummy reducer
+db.small_test.mapReduce(jconcat, jconcatr, {out:{replace:"js_test"}, useLua:false });
 
 
 

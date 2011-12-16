@@ -249,11 +249,10 @@ namespace mongo {
          */
         void LuaMapper::map( const BSONObj& o ) {
             int luaRes = 0;
-            // static int count = 0;
-            // lua_pushinteger(_luaState, count);
-            // lua_setglobal(_luaState, "iter");
+
             bson_to_lua(_luaState, o);
             lua_setglobal(_luaState, "doc");  // set the 'doc' global
+
             // TODO:
             //       create wrapper for emit()
             //       implement reducer

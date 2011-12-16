@@ -41,7 +41,7 @@ namespace mongo {
             /* run the code to count */         \
             __VA_ARGS__;                        \
             l_count = (rdtsc() - l_start_time); \
-            log(1) << "PERFORMANCE:  Cycles take to execute " << name << ": " << l_count << endl; \
+            log(1) << "PERFORMANCE:  Cycles taken for " << name << ": " << l_count << endl; \
         }
 
 // for debugging
