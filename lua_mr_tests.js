@@ -14,6 +14,11 @@
 //                      'data2':'a larger string representing a short web page or article.  a larger string representing a short web page or article.  a larger string representing a short web page or article.  a larger string representing a short web page or article.  a larger string representing a short web page or article.  a larger string representing a short web page or article.  a larger string representing a short web page or article.  a larger string representing a short web page or article.  a larger string representing a short web page or article. '
 //                      });
 // }
+for (var i = 0; i < 1000000; i++) {
+    db.complex_test.insert( { 'id': i, 
+                              'wordcloud': ['some', 'words', 'that', 'may', 'or', 'may', 'not', 'repeat', 'themselves', 'although', 'this', 'is', 'a', 'somewhat', 'contrived', 'example', 'that', 'may', 'or', 'may', 'not', 'represent', 'a', 'real', 'world', 'test', 'its', 'a', 'start', 'hey', 'what', 'do', 'you', 'know', 'there', 'are', 'lots', 'and', 'lots', 'and', 'lots', 'of', 'lots', 'of', 'lots', 'lots', 'lots', 'lots', 'lots', 'lots', 'of', 'words', 'to', 'match', 'and', 'in', 'a', 'diverse', 'order', 'that', 'may', 'or', 'may', 'not', 'repeat', 'itself', 'some', 'words', 'that', 'may', 'or', 'may', 'not', 'repeat', 'themselves', '', 'this', 'is', 'a', 'somewhat', 'contrived', '', 'that', 'may', 'or', 'may', 'not', '', 'a', 'real', 'world', 'test', 'its', 'a', 'start', 'hey', 'what', 'do', 'you', 'know', 's', 'lots', 'lots', 'lots', 'of', 'words', 'to', 'match', 'and', 'in', 'a', 'diverse', 'order', 'that', 'may', 'or', 'may', 'not', 'repeat', 'itself']
+                          } );
+}
 
 
 
@@ -27,8 +32,6 @@ m += " end ";
 
 r = function( key , values ) { return {'a':'a'} }; // dummy reducer
 db.small_test.mapReduce(m, r, {out:{replace:"test_merged"}, useLua:true});
-
-
 
 
 // lua test: 3x4 test of basic math
