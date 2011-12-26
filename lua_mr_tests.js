@@ -76,7 +76,7 @@ db.complex_test.mapReduce(m_jswc1, r_wc, {out:{replace:"test_merged"}, useLua:fa
 m_jswc2 = function() {
     words = {};
     this.wordcloud.forEach(function(word) {
-        if (word) {
+        if (words.hasOwnProperty(word)) {
             words[word] += 1;
         } else {
             words[word] = 1;
@@ -88,6 +88,9 @@ db.complex_test.mapReduce(m_jswc2, r_wc, {out:{replace:"test_merged"}, useLua:fa
 // Results (using foreach callback): 100 seconds
 //    Mon Dec 19 10:55:06 [conn20] PERFORMANCE:  Cycles taken for Run Map Reduce: 280500443016
 //    Mon Dec 19 10:55:06 [conn20] PERFORMANCE: Microseconds taken to run MapReduce: 100178810
+// Results (with check for hasOwnProperty)
+//    Mon Dec 19 21:43:58 [conn22] PERFORMANCE:  Cycles taken for Run Map Reduce: 410312344080
+//    Mon Dec 19 21:43:58 [conn22] PERFORMANCE: Microseconds taken to run MapReduce: 146540190
 
 
 
