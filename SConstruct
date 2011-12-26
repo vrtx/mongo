@@ -158,6 +158,7 @@ add_option( "ssl" , "Enable SSL" , 0 , True )
 # library choices
 add_option( "usesm" , "use spider monkey for javascript" , 0 , True )
 add_option( "usev8" , "use v8 for javascript" , 0 , True )
+add_option( "uselua" , "use luajit in addition to javascript" , 0 , True )
 
 # mongo feature options
 add_option( "noshell", "don't build shell" , 0 , True )
