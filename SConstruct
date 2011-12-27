@@ -158,12 +158,12 @@ add_option( "ssl" , "Enable SSL" , 0 , True )
 # library choices
 add_option( "usesm" , "use spider monkey for javascript" , 0 , True )
 add_option( "usev8" , "use v8 for javascript" , 0 , True )
-add_option( "uselua" , "use luajit in addition to javascript" , 0 , True )
 
 # mongo feature options
 add_option( "noshell", "don't build shell" , 0 , True )
 add_option( "safeshell", "don't let shell scripts run programs (still, don't run untrusted scripts)" , 0 , True )
 add_option( "win2008plus", "use newer operating system API features" , 0 , False )
+add_option( "lua" , "support lua scripts" , 0 , True )
 
 # dev optoins
 add_option( "d", "debug build no optimization, etc..." , 0 , True , "debugBuild" )
@@ -240,6 +240,7 @@ usesm = has_option( "usesm" )
 usev8 = has_option( "usev8" ) 
 
 asio = has_option( "asio" )
+uselua = has_option( "uselua" ) 
 
 usePCH = has_option( "usePCH" )
 
@@ -451,8 +452,18 @@ if usesm:
     scriptingFiles += [ "src/mongo/scripting/engine_spidermonkey.cpp" ]
 elif usev8:
     scriptingFiles += [ Glob( "src/mongo/scripting/*v8*.cpp" ) ]
+elif uselua:
+    # only build with lua support (omit JS interpreter)
+    # nop (handled below)
 else:
     scriptingFiles += [ "src/mongo/scripting/engine_none.cpp" ]
+
+# add support for lua
+if uselua:
+    scriptingFiles += [ Glob( "src/mongo/scripting/*lua*.cpp" ) ]
+    # build the luamongo's bson-related functions statically for now.
+    scriptingFiles += [ "src/third_party/luamongo/mongo_bsontypes.cpp", "src/third_party/luamongo/utils.cpp" ]
+    env.Append( CPPDEFINES=["USE_LUA"] )
 
 coreShardFiles = [ "src/mongo/s/config.cpp" , "src/mongo/s/grid.cpp" , "src/mongo/s/chunk.cpp" , "src/mongo/s/shard.cpp" , "src/mongo/s/shardkey.cpp" ]
 shardServerFiles = coreShardFiles + Glob( "src/mongo/s/strategy*.cpp" ) + [ "src/mongo/s/commands_admin.cpp" , "src/mongo/s/commands_public.cpp" , "src/mongo/s/request.cpp" , "src/mongo/s/client.cpp" , "src/mongo/s/cursors.cpp" ,  "src/mongo/s/server.cpp" , "src/mongo/s/config_migrate.cpp" , "src/mongo/s/s_only.cpp" , "src/mongo/s/stats.cpp" , "src/mongo/s/balance.cpp" , "src/mongo/s/balancer_policy.cpp" , "src/mongo/db/cmdline.cpp" , "src/mongo/s/writeback_listener.cpp" , "src/mongo/s/shard_version.cpp", "src/mongo/s/mr_shard.cpp", "src/mongo/s/security.cpp" ]
@@ -827,6 +838,12 @@ if usev8:
     env.Prepend( CPPPATH=["../v8/include/"] )
     env.Prepend( LIBPATH=["../v8/"] )
 
+if uselua:
+    # BB TODO: use relative paths?  git submodule?
+    env.Prepend( CPPPATH=["/usr/local/include/lua"] )
+    env.Prepend( CPPPATH=["/usr/local/include/"] )
+    env.Prepend( LIBPATH=["/usr/local/lib/"] )
+
 if "uname" in dir(os):
     hacks = buildscripts.findHacks( os.uname() )
     if hacks is not None:
@@ -1010,6 +1027,10 @@ def doConfigure( myenv , shell=False ):
             myCheckLib( [ "v8_g" , "v8" ] , True )
         else:
             myCheckLib( "v8" , True )
+
+    if uselua:
+        myCheckLib( "luajit" , True )
+
 
     # requires ports devel/libexecinfo to be installed
     if freebsd or openbsd:
