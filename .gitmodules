@@ -1,3 +1,6 @@
 [submodule "luamongo"]
 	path = luamongo
 	url = https://github.com/moai/luamongo.git
+[submodule "src/third_party/luamongo"]
+	path = src/third_party/luamongo
+	url = https://github.com/moai/luamongo.git
