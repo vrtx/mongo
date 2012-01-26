@@ -162,9 +162,8 @@ namespace mongo {
 
         if( killed() ) 
             b.append("killed", true);
-        
+        b.append( "ts", (long long int)curTimeMicros64());
         b.append( "numYields" , _numYields );
-
         return b.obj();
     }
 

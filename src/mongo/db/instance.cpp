@@ -416,7 +416,6 @@ namespace mongo {
         currentOp.ensureStarted();
         currentOp.done();
         debug.executionTime = currentOp.totalTimeMillis();
-
         //DEV log = true;
         if ( log || debug.executionTime > logThreshold ) {
             if( logLevel < 3 && op == dbGetMore && strstr(ns, ".oplog.") && debug.executionTime < 4300 && !log ) {

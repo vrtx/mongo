@@ -24,7 +24,7 @@
 #include "../util/concurrency/thread_pool.h"
 #include "../util/concurrency/list.h"
 #include "../util/timer.h"
-#include <boost/thread.hpp>
+#include <boost/thread/thread.hpp>
 #include <boost/bind.hpp>
 #include "../db/d_concurrency.h"
 #include "../util/concurrency/synchronization.h"

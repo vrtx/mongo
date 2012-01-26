@@ -110,8 +110,11 @@ namespace mongo {
         _p._allocationAddress = p;
         _p._data = (char *) p;
 #else
-        mallocSelfAligned(sz);
-        assert( ((size_t) _p._data) % Alignment == 0 );
+        void *p = malloc(sz);
+        massert(13525, "out of memory AlignedBuilder", res == null_ptr_t);
+        p += Alignment - ((uintptr_t)amem & (Alignment - 1));
+        _p._allocationAddress = p;
+        _p._data = (char *) p;
 #endif
     }
 

@@ -17,23 +17,58 @@
 
 #pragma once
 
+#include "rube_alloc.h";
+#include <new>
+
 namespace mongo {
 
-    inline void * ourmalloc(size_t size) {
-        void *x = malloc(size);
-        if ( x == 0 ) dbexit( EXIT_OOM_MALLOC , "malloc fails");
+    inline void * ourmalloc( size_t size ) {
+        void *x = malloc( size );
+#ifdef DO_TRACK_ALLOC
+        track_alloc( x, size );
+#endif
+        if ( x == 0 ) dbexit( EXIT_OOM_MALLOC , "malloc fails" );
         return x;
     }
 
-    inline void * ourrealloc(void *ptr, size_t size) {
-        void *x = realloc(ptr, size);
-        if ( x == 0 ) dbexit( EXIT_OOM_REALLOC , "realloc fails");
+    inline void * ourrealloc( void *ptr, size_t size ) {
+        void *x = realloc( ptr, size );
+#ifdef DO_TRACK_ALLOC
+        track_alloc( x, size, 'R' );
+#endif
+        if ( x == 0 ) dbexit( EXIT_OOM_REALLOC , "realloc fails" );
         return x;
     }
+
+    inline void ourfree( void *addr ) {
+#ifdef DO_TRACK_ALLOC
+        track_alloc( addr, 0, 'F' );
+#endif
+        free( addr );
+    }
+
+} // namespace mongo
+
+inline void operator delete ( void *addr ) {
+#ifdef DO_TRACK_ALLOC
+    mongo::track_alloc( addr, 0, 'F' );
+#endif
+    free( addr ); 
+}
+
+inline void* operator new ( size_t size ) {
+    void *x = malloc( size );
+#ifdef DO_TRACK_ALLOC
+    mongo::track_alloc( x, size );
+#endif
+    if ( x == 0 ) dbexit( mongo::EXIT_OOM_MALLOC , "malloc fails" );
+    return x;
+}
 
 #define MONGO_malloc mongo::ourmalloc
 #define malloc MONGO_malloc
 #define MONGO_realloc mongo::ourrealloc
 #define realloc MONGO_realloc
+#define MONGO_free(x) mongo::ourfree(x)
+#define free(x) MONGO_free(x)
 
-} // namespace mongo
