@@ -195,11 +195,11 @@ namespace mongo {
         return DBClientBase::findOne( ns , query , fieldsToReturn , queryOptions );
     }
 
-    bool SyncClusterConnection::auth(const string &dbname, const string &username, const string &password_text, string& errmsg, bool digestPassword) {
+    bool SyncClusterConnection::auth(const string &dbname, const string &username, const string &password_text, string& errmsg, bool digestPassword, Auth::Level* level) {
         for (vector<DBClientConnection*>::iterator it = _conns.begin(); it < _conns.end(); it++) {
             massert( 15848, "sync cluster of sync clusters?", (*it)->type() != ConnectionString::SYNC);
 
-            if (!(*it)->auth(dbname, username, password_text, errmsg, digestPassword)) {
+            if (!(*it)->auth(dbname, username, password_text, errmsg, digestPassword, level)) {
                 return false;
             }
         }
@@ -361,7 +361,7 @@ namespace mongo {
         throw UserException( 8008 , "all servers down!" );
     }
 
-    void SyncClusterConnection::say( Message &toSend, bool isRetry ) {
+    void SyncClusterConnection::say( Message &toSend, bool isRetry , string * actualServer ) {
         string errmsg;
         if ( ! prepare( errmsg ) )
             throw UserException( 13397 , (string)"SyncClusterConnection::say prepare failed: " + errmsg );
@@ -369,6 +369,8 @@ namespace mongo {
         for ( size_t i=0; i<_conns.size(); i++ ) {
             _conns[i]->say( toSend );
         }
+
+        // TODO: should we set actualServer??
 
         _checkLast();
     }

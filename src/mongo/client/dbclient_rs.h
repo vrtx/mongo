@@ -229,7 +229,7 @@ namespace mongo {
 
         /** Authorize.  Authorizes all nodes as needed
         */
-        virtual bool auth(const string &dbname, const string &username, const string &pwd, string& errmsg, bool digestPassword = true );
+        virtual bool auth(const string &dbname, const string &username, const string &pwd, string& errmsg, bool digestPassword = true, Auth::Level * level = NULL);
 
         // ----------- simple functions --------------
 
@@ -259,7 +259,7 @@ namespace mongo {
 
         // ---- callback pieces -------
 
-        virtual void say( Message &toSend, bool isRetry = false );
+        virtual void say( Message &toSend, bool isRetry = false , string* actualServer = 0);
         virtual bool recv( Message &toRecv );
         virtual void checkResponse( const char* data, int nReturned, bool* retry = NULL, string* targetHost = NULL );
 

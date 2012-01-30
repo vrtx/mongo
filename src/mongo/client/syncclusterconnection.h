@@ -76,7 +76,7 @@ namespace mongo {
         virtual void update( const string &ns , Query query , BSONObj obj , bool upsert , bool multi );
 
         virtual bool call( Message &toSend, Message &response, bool assertOk , string * actualServer );
-        virtual void say( Message &toSend, bool isRetry = false );
+        virtual void say( Message &toSend, bool isRetry = false , string * actualServer = 0 );
         virtual void sayPiggyBack( Message &toSend );
 
         virtual void killCursor( long long cursorID );
@@ -94,7 +94,7 @@ namespace mongo {
         void setAllSoTimeouts( double socketTimeout );
         double getSoTimeout() const { return _socketTimeout; }
 
-        virtual bool auth(const string &dbname, const string &username, const string &password_text, string& errmsg, bool digestPassword);
+        virtual bool auth(const string &dbname, const string &username, const string &password_text, string& errmsg, bool digestPassword, Auth::Level* level=NULL);
 
         virtual bool lazySupported() const { return false; }
     private:

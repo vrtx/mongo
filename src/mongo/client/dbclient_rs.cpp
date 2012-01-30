@@ -723,11 +723,11 @@ namespace mongo {
         return true;
     }
 
-    bool DBClientReplicaSet::auth(const string &dbname, const string &username, const string &pwd, string& errmsg, bool digestPassword ) {
+    bool DBClientReplicaSet::auth(const string &dbname, const string &username, const string &pwd, string& errmsg, bool digestPassword, Auth::Level * level) {
         DBClientConnection * m = checkMaster();
 
         // first make sure it actually works
-        if( ! m->auth(dbname, username, pwd, errmsg, digestPassword ) )
+        if( ! m->auth(dbname, username, pwd, errmsg, digestPassword, level ) )
             return false;
 
         // now that it does, we should save so that for a new node we can auth
@@ -829,7 +829,7 @@ namespace mongo {
         _slave.reset();
     }
 
-    void DBClientReplicaSet::say( Message& toSend, bool isRetry ) {
+    void DBClientReplicaSet::say( Message& toSend, bool isRetry , string * actualServer ) {
 
         if( ! isRetry )
             _lazyState = LazyState();
@@ -846,6 +846,8 @@ namespace mongo {
                 for ( int i = _lazyState._retries; i < 3; i++ ) {
                     try {
                         DBClientConnection* slave = checkSlave();
+                        if ( actualServer )
+                            *actualServer = slave->getServerAddress();
                         slave->say( toSend );
 
                         _lazyState._lastOp = lastOp;
@@ -862,6 +864,9 @@ namespace mongo {
         }
 
         DBClientConnection* master = checkMaster();
+        if ( actualServer )
+            *actualServer = master->getServerAddress();
+
         master->say( toSend );
 
         _lazyState._lastOp = lastOp;

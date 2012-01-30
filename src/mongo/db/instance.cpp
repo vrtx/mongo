@@ -795,7 +795,7 @@ namespace mongo {
         return true;
     }
 
-    void DBDirectClient::say( Message &toSend, bool isRetry ) {
+    void DBDirectClient::say( Message &toSend, bool isRetry, string * actualServer ) {
         if ( lastError._get() )
             lastError.startRequest( toSend, lastError._get() );
         DbResponse dbResponse;
