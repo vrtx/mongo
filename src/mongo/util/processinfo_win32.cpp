@@ -19,7 +19,6 @@
 #include "processinfo.h"
 #include <iostream>
 #include <psapi.h>
-#include "../bson/bsonobjbuilder.h"
 using namespace std;
 
 int getpid() {
@@ -70,6 +69,17 @@ namespace mongo {
             info.append("availPageFileMB", static_cast<int>(mse.ullAvailPageFile / 1024 / 1024));
             info.append("ramMB", static_cast<int>(mse.ullTotalPhys / 1024 / 1024));
         }
+    }
+
+    void ProcessInfo::getSystemInfo( BSONObjBuilder& info ) {
+        if (_serverStats.empty())
+            // lazy load sysinfo
+            collectSystemInfo();
+    }
+
+    void ProcessInfo::collectSystemInfo() {
+        _serverStats.insert( pair <string, string>( "OSType", "WinNT" ) );
+        _serverStats.insert( pair <string, string>( "OSName", "Windows 7" ) );
     }
 
     bool ProcessInfo::blockCheckSupported() {

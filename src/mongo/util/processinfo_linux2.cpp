@@ -20,9 +20,9 @@
 #include <iostream>
 #include <stdio.h>
 #include <malloc.h>
-#include <db/jsobj.h>
 #include <unistd.h>
 #include <sys/mman.h>
+#include <gnu/libc-version.h>
 
 using namespace std;
 
@@ -212,7 +212,7 @@ namespace mongo {
         return (int)( p.getResidentSize() / ( 1024.0 * 1024 ) );
     }
 
-    void ProcessInfo::getExtraInfo(BSONObjBuilder& info) {
+    void ProcessInfo::getExtraInfo( BSONObjBuilder& info ) {
         // [dm] i don't think mallinfo works. (64 bit.)  ??
         struct mallinfo malloc_info = mallinfo(); // structure has same name as function that returns it. (see malloc.h)
         info.append("heap_usage_bytes", malloc_info.uordblks/*main arena*/ + malloc_info.hblkhd/*mmap blocks*/);
@@ -221,6 +221,22 @@ namespace mongo {
         LinuxProc p(_pid);
         info.append("page_faults", (int)p._maj_flt);
     }
+
+    void ProcessInfo::getSystemInfo( BSONObjBuilder& info ) {
+        if (_serverStats.empty())
+            // lazy load sysinfo
+            collectSystemInfo();
+    }
+
+    void ProcessInfo::collectSystemInfo() {
+        _serverStats.insert(pair("OSType", "Linux"));
+        _serverStats.insert(pair("OSName", "Ubuntu"));
+        _serverStats.insert(pair("OSVersion", ""));
+        _serverStats.insert(pair("LibCVersion", gnu_get_libc_version()))
+        _serverStats.insert(pair("LibCRelease", gnu_get_libc_release()))
+        _serverStats
+    }
+
 
     bool ProcessInfo::blockCheckSupported() {
         return true;

@@ -43,6 +43,17 @@ namespace mongo {
 
     void ProcessInfo::getExtraInfo(BSONObjBuilder& info) {}
 
+    void ProcessInfo::getSystemInfo( BSONObjBuilder& info ) {
+        if (_serverStats.empty())
+            // lazy load sysinfo
+            collectSystemInfo();
+    }
+
+    void ProcessInfo::collectSystemInfo() {
+        _serverStats.insert( pair <string, string>( "OSType", "Unknown" ) );
+    }
+
+
     bool ProcessInfo::blockCheckSupported() {
         return false;
     }
