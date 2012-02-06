@@ -171,9 +171,9 @@ namespace mongo {
         bSys.append("cpuExtraFeatures", getSysctlByName("machdep.cpu.extfeatures"));
         bSys.append("pageSize", getSysctlByName("hw.pagesize", sysctlValue_Int));
         bSys.append("scheduler", getSysctlByName("kern.sched"));
-        bSI.append(StringData("system"), bSys.obj());
-        bSI.append(StringData("os"), bOS.obj());
-        _serverStats = bSI.obj();
+        bSI.append(StringData("system"), bSys.obj().copy());
+        bSI.append(StringData("os"), bOS.obj().copy());
+        _serverStats = bSI.obj().copy();
         log() << "Performance: " << _serverStats.jsonString(Strict, true) << endl;
     }
 

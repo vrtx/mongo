@@ -71,7 +71,7 @@ namespace mongo {
 
     private:
         pid_t _pid;
-        BSONObj _serverStats;
+        static BSONObj _serverStats;
     };
 
     void writePidFile( const std::string& path );
