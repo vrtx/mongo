@@ -270,7 +270,7 @@ namespace mongo {
         if ( !meminfo.empty() && (lineOff = meminfo.find("MemTotal")) != string::npos ) {
             // found MemTotal line.  capture everything between 'MemTotal:' and ' kB'.
             lineOff = meminfo.substr( lineOff ).find( ':' ) + 1;
-            meminfo = meminfo.substr( lineOff, meminfo.find( "kB" ) - 1);
+            meminfo = meminfo.substr( lineOff, meminfo.substr( lineOff ).find( "kB" ) - 1);
             lineOff = 0;
 
             // trim whitespace and append 000 to replace kB.
@@ -339,7 +339,7 @@ namespace mongo {
         bOS.append("versionSignature", LinuxSysHelper::readLineFromFile("/proc/version_signature"));
         bOS.append("versionString", LinuxSysHelper::readLineFromFile("/proc/version"));
         bOS.append("libcVersion", gnu_get_libc_version());
-        bSys.append("numa", LinuxSysHelper::processHasNumaEnabled() ? "yes" : "no");
+        bSys.append("numa", processHasNumaEnabled() ? "yes" : "no");
         bSys.append("memSize",  LinuxSysHelper::getSystemMemorySize());
 
         // // The following can also be parsed from procfs if useful
@@ -357,24 +357,25 @@ namespace mongo {
   }
 
 
-  /**
-  * Determine if the process is running with (cc)NUMA
-  */
-  bool ProcessInfo::processHasNumaEnabled() {
-      if ( boost::filesystem::exists("/sys/devices/system/node/node1") && 
-           boost::filesystem::exists("/proc/self/numa_maps") ) {
-          // proc is populated with numa entries
+    /**
+    * Determine if the process is running with (cc)NUMA
+    */
+    bool ProcessInfo::processHasNumaEnabled() {
+        if ( boost::filesystem::exists("/sys/devices/system/node/node1") && 
+             boost::filesystem::exists("/proc/self/numa_maps") ) {
+            // proc is populated with numa entries
 
-          // read the second column of first line to determine numa state
-          // ('default' = enabled, 'interleave' = disabled).  Logic from version.cpp's warnings.
-          string line = readLineFromFile("/proc/self/numa_maps").append(" \0");
-          size_t pos = line.find(' ');
-          if ( pos != string::npos && line.substr( pos+1, 10 ).find( "interleave" ) == string::npos )
-              // interleave not found; 
-              return true;
-      }
-      return false;
-  }
+            // read the second column of first line to determine numa state
+            // ('default' = enabled, 'interleave' = disabled).  Logic from version.cpp's warnings.
+            string line = LinuxSysHelper::readLineFromFile("/proc/self/numa_maps").append(" \0");
+            size_t pos = line.find(' ');
+            if ( pos != string::npos && line.substr( pos+1, 10 ).find( "interleave" ) == string::npos )
+                // interleave not found; 
+                return true;
+        }
+        return false;
+    }
+
     bool ProcessInfo::blockCheckSupported() {
         return true;
     }
