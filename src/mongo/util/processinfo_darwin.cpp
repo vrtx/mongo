@@ -112,7 +112,7 @@ namespace mongo {
         if (_serverStats.isEmpty())
             // lazy load sysinfo
             collectSystemInfo();
-        info.append("host", _serverStatus);
+        info.append("host", _serverStats);
     }
 
     enum sysctlValueType {
