@@ -15,14 +15,16 @@
  *    limitations under the License.
  */
 
-#include "processinfo.h"
-
+#include <malloc.h>
 #include <iostream>
 #include <stdio.h>
-#include <malloc.h>
-#include <db/jsobj.h>
 #include <unistd.h>
 #include <sys/mman.h>
+#include <gnu/libc-version.h>
+
+#include "processinfo.h"
+#include "boost/filesystem.hpp"
+#include <util/file.h>
 
 using namespace std;
 
@@ -192,6 +194,117 @@ namespace mongo {
     };
 
 
+    class LinuxSysHelper {
+    public:
+
+    /**
+    * Read the first 1023 bytes from a file
+    */
+    static string readLineFromFile( const char* fname ) {
+        FILE* f;
+        char fstr[1024] = { 0 };
+
+        f = fopen( fname, "r" );
+        if ( f != NULL ) {
+            if ( fgets( fstr, 1023, f ) != NULL )
+                fstr[strlen( fstr ) < 1 ? 0 : strlen( fstr ) - 1] = '\0';
+            fclose( f );
+        }
+        return fstr;
+    }
+
+    /**
+    * Determine linux distro and version
+    */
+    static void getLinuxDistro( string& name, string& version ) {
+        File f;
+        char buf[4096] = { 0 };
+
+        // try lsb file first
+        if ( boost::filesystem::exists( "/etc/lsb-release" ) ) {
+            f.open( "/etc/lsb-release", true );
+            if ( ! f.is_open() || f.bad() )
+                return;
+            f.read( 0, buf, f.len() > 4095 ? 4095 : f.len() );
+
+            // find the distribution name and version in the contents.
+            // format:  KEY=VAL\n
+            string contents = buf;
+            unsigned lineCnt = 0;
+            try {
+                while ( lineCnt < contents.length() - 1 && contents.substr( lineCnt ).find( '\n' ) != string::npos ) {
+                    // until we hit the last newline or eof
+                    string line = contents.substr(lineCnt, contents.substr( lineCnt ).find( '\n' ));
+                    lineCnt += contents.substr( lineCnt ).find( '\n' ) + 1;
+                    size_t delim = line.find( '=' );
+                    string key = line.substr( 0, delim );
+                    string val = line.substr( delim + 1 );  // 0-based offset of delim
+                    if ( key.compare( "DISTRIB_ID" ) == 0 )
+                        name = val;
+                    if ( string(key).compare( "DISTRIB_RELEASE" ) == 0 )
+                        version = val;
+                }
+            }
+            catch (const std::out_of_range &e) {
+                // attempt to get invalid substr
+            }
+            return; // return with lsb-relase data
+        }
+        // // try redhat-release file
+        // if ( boost::filesystem::exists( "/etc/lsb-release" ) ) {
+        // f.open( "/etc/lsb-release", true );
+        // if ( ! f.is_open() || f.bad() )
+        //   return;
+        // f.read( 0, buf, f.len() > 4095 ? 4095 : f.len() );
+        // 
+        // // find the combined name and version string
+
+    }
+
+    /**
+    * Determine if the process is running with (cc)NUMA
+    */
+    static bool systemHasNumaEnabled() {
+        if ( boost::filesystem::exists("/sys/devices/system/node/node1") && 
+             boost::filesystem::exists("/proc/self/numa_maps") ) {
+            // proc is populated with numa entries
+
+            // read the second column of first line to determine numa state
+            // ('default' = enabled, 'interleave' = disabled).  Logic from version.cpp's warnings.
+            string line = readLineFromFile("/proc/self/numa_maps").append(" \0");
+            size_t pos = line.find(' ');
+            if ( pos != string::npos && line.substr( pos+1, 10 ).find( "interleave" ) == string::npos )
+                // interleave not found; 
+                return true;
+        }
+        return false;
+    }
+
+    /**
+    * Get system memory total
+    */
+    static string getSystemMemorySize() {
+        string meminfo = readLineFromFile("/proc/meminfo");
+        size_t lineOff= 0;
+        if ( !meminfo.empty() && (lineOff = meminfo.find("MemTotal")) != string::npos ) {
+            // found MemTotal line.  capture everything between 'MemTotal:' and ' kB'.
+            lineOff = meminfo.substr( lineOff ).find( ':' ) + 1;
+            meminfo = meminfo.substr( lineOff, meminfo.find( "kB" ) - 1);
+            lineOff = 0;
+
+            // trim whitespace and append 000 to replace kB.
+            while ( isspace( meminfo.at( lineOff ) ) ) lineOff++;
+            meminfo = meminfo.substr( lineOff ).append("000");
+        }
+        else {
+            meminfo = "";
+        }
+        return meminfo;
+    }
+
+    };
+
+
     ProcessInfo::ProcessInfo( pid_t pid ) : _pid( pid ) {
     }
 
@@ -212,7 +325,7 @@ namespace mongo {
         return (int)( p.getResidentSize() / ( 1024.0 * 1024 ) );
     }
 
-    void ProcessInfo::getExtraInfo(BSONObjBuilder& info) {
+    void ProcessInfo::getExtraInfo( BSONObjBuilder& info ) {
         // [dm] i don't think mallinfo works. (64 bit.)  ??
         struct mallinfo malloc_info = mallinfo(); // structure has same name as function that returns it. (see malloc.h)
         info.append("heap_usage_bytes", malloc_info.uordblks/*main arena*/ + malloc_info.hblkhd/*mmap blocks*/);
@@ -220,7 +333,48 @@ namespace mongo {
 
         LinuxProc p(_pid);
         info.append("page_faults", (int)p._maj_flt);
+        getSystemInfo(info);
     }
+
+    void ProcessInfo::getSystemInfo( BSONObjBuilder& info ) {
+        if (_serverStats.isEmpty())
+            // lazy load sysinfo
+            collectSystemInfo();
+		info.append("Host", _serverStats);
+		log() << "getSystemInfo: " << _serverStats.jsonString(Strict, true) << endl;
+    }
+
+  /**
+   * Save a BSON obj representing the host system's details
+   */
+  void ProcessInfo::collectSystemInfo() {
+	BSONObjBuilder bSI, bSys, bOS;
+	string distroName, distroVersion;
+	LinuxSysHelper::getLinuxDistro(distroName, distroVersion);
+
+	bOS.append("Type", "Linux");
+	bOS.append("Distro", distroName);
+	bOS.append("Version", distroVersion);
+	bOS.append("VersionSignature", LinuxSysHelper::readLineFromFile("/proc/version_signature"));
+	bOS.append("VersionString", LinuxSysHelper::readLineFromFile("/proc/version"));
+	bOS.append("LibCVersion", gnu_get_libc_version());
+	bSys.append("Numa", LinuxSysHelper::systemHasNumaEnabled() ? "yes" : "no");
+	bSys.append("MemSize",  LinuxSysHelper::getSystemMemorySize());
+
+	// The following can also be parsed from procfs if useful
+//	bOS.append("BootTime", "");
+//	bSys.append("Architecture",  "");
+//	bSys.append("Model", "");
+//	bSys.append("NumCores", "");    // include hyperthreading
+//	bSys.append("PhysicalCores", "");
+//	bSys.append("CPUFrequency", "");
+//	bSys.append("CPUString", "");
+    
+	bSI.append(StringData("System"), bSys.obj());
+	bSI.append(StringData("OS"), bOS.obj());
+	_serverStats = bSI.obj();
+  }
+  
 
     bool ProcessInfo::blockCheckSupported() {
         return true;
