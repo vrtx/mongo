@@ -321,7 +321,7 @@ namespace mongo {
         if (_serverStats.isEmpty())
             // lazy load sysinfo
             collectSystemInfo();
-        info.append("Host", _serverStats);
+        info.append("host", _serverStats);
         log() << "getSystemInfo: " << _serverStats.jsonString(Strict, true) << endl;
     }
 
@@ -333,14 +333,14 @@ namespace mongo {
         string distroName, distroVersion;
         LinuxSysHelper::getLinuxDistro(distroName, distroVersion);
 
-        bOS.append("Type", "Linux");
-        bOS.append("Distro", distroName);
-        bOS.append("Version", distroVersion);
-        bOS.append("VersionSignature", LinuxSysHelper::readLineFromFile("/proc/version_signature"));
-        bOS.append("VersionString", LinuxSysHelper::readLineFromFile("/proc/version"));
-        bOS.append("LibCVersion", gnu_get_libc_version());
-        bSys.append("Numa", LinuxSysHelper::processHasNumaEnabled() ? "yes" : "no");
-        bSys.append("MemSize",  LinuxSysHelper::getSystemMemorySize());
+        bOS.append("type", "Linux");
+        bOS.append("distro", distroName);
+        bOS.append("version", distroVersion);
+        bOS.append("versionSignature", LinuxSysHelper::readLineFromFile("/proc/version_signature"));
+        bOS.append("versionString", LinuxSysHelper::readLineFromFile("/proc/version"));
+        bOS.append("libcVersion", gnu_get_libc_version());
+        bSys.append("numa", LinuxSysHelper::processHasNumaEnabled() ? "yes" : "no");
+        bSys.append("memSize",  LinuxSysHelper::getSystemMemorySize());
 
         // // The following can also be parsed from procfs if useful
         // bOS.append("BootTime", "");
@@ -351,8 +351,8 @@ namespace mongo {
         // bSys.append("CPUFrequency", "");
         // bSys.append("CPUString", "");
 
-        bSI.append(StringData("System"), bSys.obj());
-        bSI.append(StringData("OS"), bOS.obj());
+        bSI.append(StringData("system"), bSys.obj());
+        bSI.append(StringData("os"), bOS.obj());
         _serverStats = bSI.obj();
   }
 

@@ -75,15 +75,15 @@ namespace mongo {
         if (_serverStats.empty())
             // lazy load sysinfo
             collectSystemInfo();
-        info.append("Host", _serverStats);
+        info.append("host", _serverStats);
     }
 
     void ProcessInfo::collectSystemInfo() {
         BSONObjBuilder bSI, bSys, bOS;
 
-        bOS.append("Type", "Windows");
-        bOS.append("Distro", "Windows Server 2008");
-        bOS.append("Version", "7.1.0sp1");
+        bOS.append("type", "Windows");
+        bOS.append("distro", "Windows Server 2008");
+        bOS.append("version", "7.1.0sp1");
         _serverStats = bSI.obj()
     }
 

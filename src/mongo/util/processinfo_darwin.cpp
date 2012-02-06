@@ -112,6 +112,7 @@ namespace mongo {
         if (_serverStats.isEmpty())
             // lazy load sysinfo
             collectSystemInfo();
+        info.append("host", _serverStatus);
     }
 
     enum sysctlValueType {
@@ -151,27 +152,27 @@ namespace mongo {
 
     void ProcessInfo::collectSystemInfo() {
         BSONObjBuilder bSI, bSys, bOS;
-        bOS.append("Type", "Darwin");
-        bOS.append("Distro", "Mac OS X");
-        bOS.append("Version", getSysctlByName("kern.osrelease"));
-        bOS.append("VersionString", getSysctlByName("kern.version"));
-        bOS.append("BootTime", getSysctlByName("kern.boottime", sysctlValue_Int));
-        bOS.append("AlwaysFullSync", getSysctlByName("vfs.generic.always_do_fullfsync", sysctlValue_Int));
-        bOS.append("NFSAsync", getSysctlByName("vfs.generic.nfs.client.allow_async", sysctlValue_Int));
+        bOS.append("type", "Darwin");
+        bOS.append("distro", "Mac OS X");
+        bOS.append("version", getSysctlByName("kern.osrelease"));
+        bOS.append("versionString", getSysctlByName("kern.version"));
+        bOS.append("bootTime", getSysctlByName("kern.boottime", sysctlValue_Int));
+        bOS.append("alwaysFullSync", getSysctlByName("vfs.generic.always_do_fullfsync", sysctlValue_Int));
+        bOS.append("nFSAsync", getSysctlByName("vfs.generic.nfs.client.allow_async", sysctlValue_Int));
 
-        bSys.append("Architecture",  getSysctlByName("hw.machine"));
-        bSys.append("Model", getSysctlByName("hw.model"));
-        bSys.append("MemSize", getSysctlByName("hw.memsize", sysctlValue_Int));
-        bSys.append("NumCores", getSysctlByName("hw.ncpu", sysctlValue_Int));    // include hyperthreading
-        bSys.append("PhysicalCores", getSysctlByName("machdep.cpu.core_count", sysctlValue_Int));
-        bSys.append("CPUFrequency", getSysctlByName("hw.cpufrequency", sysctlValue_Int));
-        bSys.append("CPUString", getSysctlByName("machdep.cpu.brand_string"));
-        bSys.append("CPUFeatures", getSysctlByName("machdep.cpu.features"));
-        bSys.append("CPUExtraFeatures", getSysctlByName("machdep.cpu.extfeatures"));
-        bSys.append("PageSize", getSysctlByName("hw.pagesize", sysctlValue_Int));
-        bSys.append("Scheduler", getSysctlByName("kern.sched"));
-        bSI.append(StringData("System"), bSys.obj());
-        bSI.append(StringData("OS"), bOS.obj());
+        bSys.append("architecture",  getSysctlByName("hw.machine"));
+        bSys.append("model", getSysctlByName("hw.model"));
+        bSys.append("memSize", getSysctlByName("hw.memsize", sysctlValue_Int));
+        bSys.append("numCores", getSysctlByName("hw.ncpu", sysctlValue_Int));    // include hyperthreading
+        bSys.append("physicalCores", getSysctlByName("machdep.cpu.core_count", sysctlValue_Int));
+        bSys.append("cpuFrequency", getSysctlByName("hw.cpufrequency", sysctlValue_Int));
+        bSys.append("cpuString", getSysctlByName("machdep.cpu.brand_string"));
+        bSys.append("cpuFeatures", getSysctlByName("machdep.cpu.features"));
+        bSys.append("cpuExtraFeatures", getSysctlByName("machdep.cpu.extfeatures"));
+        bSys.append("pageSize", getSysctlByName("hw.pagesize", sysctlValue_Int));
+        bSys.append("scheduler", getSysctlByName("kern.sched"));
+        bSI.append(StringData("system"), bSys.obj());
+        bSI.append(StringData("os"), bOS.obj());
         _serverStats = bSI.obj();
         log() << "Performance: " << _serverStats.jsonString(Strict, true) << endl;
     }
