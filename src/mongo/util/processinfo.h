@@ -61,6 +61,11 @@ namespace mongo {
 
         bool supported();
 
+        /**
+         * Determine if NUMA is enabled
+         */
+        bool processHasNumaEnabled();
+
         static bool blockCheckSupported();
         static bool blockInMemory( char * start );
 

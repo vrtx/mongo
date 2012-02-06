@@ -262,25 +262,6 @@ namespace mongo {
     }
 
     /**
-    * Determine if the process is running with (cc)NUMA
-    */
-    static bool systemHasNumaEnabled() {
-        if ( boost::filesystem::exists("/sys/devices/system/node/node1") && 
-             boost::filesystem::exists("/proc/self/numa_maps") ) {
-            // proc is populated with numa entries
-
-            // read the second column of first line to determine numa state
-            // ('default' = enabled, 'interleave' = disabled).  Logic from version.cpp's warnings.
-            string line = readLineFromFile("/proc/self/numa_maps").append(" \0");
-            size_t pos = line.find(' ');
-            if ( pos != string::npos && line.substr( pos+1, 10 ).find( "interleave" ) == string::npos )
-                // interleave not found; 
-                return true;
-        }
-        return false;
-    }
-
-    /**
     * Get system memory total
     */
     static string getSystemMemorySize() {
@@ -340,42 +321,60 @@ namespace mongo {
         if (_serverStats.isEmpty())
             // lazy load sysinfo
             collectSystemInfo();
-		info.append("Host", _serverStats);
-		log() << "getSystemInfo: " << _serverStats.jsonString(Strict, true) << endl;
+        info.append("Host", _serverStats);
+        log() << "getSystemInfo: " << _serverStats.jsonString(Strict, true) << endl;
     }
 
-  /**
-   * Save a BSON obj representing the host system's details
-   */
-  void ProcessInfo::collectSystemInfo() {
-	BSONObjBuilder bSI, bSys, bOS;
-	string distroName, distroVersion;
-	LinuxSysHelper::getLinuxDistro(distroName, distroVersion);
+    /**
+    * Save a BSON obj representing the host system's details
+    */
+    void ProcessInfo::collectSystemInfo() {
+        BSONObjBuilder bSI, bSys, bOS;
+        string distroName, distroVersion;
+        LinuxSysHelper::getLinuxDistro(distroName, distroVersion);
 
-	bOS.append("Type", "Linux");
-	bOS.append("Distro", distroName);
-	bOS.append("Version", distroVersion);
-	bOS.append("VersionSignature", LinuxSysHelper::readLineFromFile("/proc/version_signature"));
-	bOS.append("VersionString", LinuxSysHelper::readLineFromFile("/proc/version"));
-	bOS.append("LibCVersion", gnu_get_libc_version());
-	bSys.append("Numa", LinuxSysHelper::systemHasNumaEnabled() ? "yes" : "no");
-	bSys.append("MemSize",  LinuxSysHelper::getSystemMemorySize());
+        bOS.append("Type", "Linux");
+        bOS.append("Distro", distroName);
+        bOS.append("Version", distroVersion);
+        bOS.append("VersionSignature", LinuxSysHelper::readLineFromFile("/proc/version_signature"));
+        bOS.append("VersionString", LinuxSysHelper::readLineFromFile("/proc/version"));
+        bOS.append("LibCVersion", gnu_get_libc_version());
+        bSys.append("Numa", LinuxSysHelper::processHasNumaEnabled() ? "yes" : "no");
+        bSys.append("MemSize",  LinuxSysHelper::getSystemMemorySize());
 
-	// The following can also be parsed from procfs if useful
-//	bOS.append("BootTime", "");
-//	bSys.append("Architecture",  "");
-//	bSys.append("Model", "");
-//	bSys.append("NumCores", "");    // include hyperthreading
-//	bSys.append("PhysicalCores", "");
-//	bSys.append("CPUFrequency", "");
-//	bSys.append("CPUString", "");
-    
-	bSI.append(StringData("System"), bSys.obj());
-	bSI.append(StringData("OS"), bOS.obj());
-	_serverStats = bSI.obj();
+        // // The following can also be parsed from procfs if useful
+        // bOS.append("BootTime", "");
+        // bSys.append("Architecture",  "");
+        // bSys.append("Model", "");
+        // bSys.append("NumCores", "");    // include hyperthreading
+        // bSys.append("PhysicalCores", "");
+        // bSys.append("CPUFrequency", "");
+        // bSys.append("CPUString", "");
+
+        bSI.append(StringData("System"), bSys.obj());
+        bSI.append(StringData("OS"), bOS.obj());
+        _serverStats = bSI.obj();
   }
-  
 
+
+  /**
+  * Determine if the process is running with (cc)NUMA
+  */
+  bool ProcessInfo::processHasNumaEnabled() {
+      if ( boost::filesystem::exists("/sys/devices/system/node/node1") && 
+           boost::filesystem::exists("/proc/self/numa_maps") ) {
+          // proc is populated with numa entries
+
+          // read the second column of first line to determine numa state
+          // ('default' = enabled, 'interleave' = disabled).  Logic from version.cpp's warnings.
+          string line = readLineFromFile("/proc/self/numa_maps").append(" \0");
+          size_t pos = line.find(' ');
+          if ( pos != string::npos && line.substr( pos+1, 10 ).find( "interleave" ) == string::npos )
+              // interleave not found; 
+              return true;
+      }
+      return false;
+  }
     bool ProcessInfo::blockCheckSupported() {
         return true;
     }

@@ -176,6 +176,10 @@ namespace mongo {
         log() << "Performance: " << _serverStats.jsonString(Strict, true) << endl;
     }
 
+    bool ProcessInfo::processHasNumaEnabled() {
+        return false;
+    }
+
     bool ProcessInfo::blockCheckSupported() {
         return true;
     }

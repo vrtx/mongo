@@ -75,11 +75,21 @@ namespace mongo {
         if (_serverStats.empty())
             // lazy load sysinfo
             collectSystemInfo();
+        info.append("Host", _serverStats);
     }
 
     void ProcessInfo::collectSystemInfo() {
-        _serverStats.insert( pair <string, string>( "OSType", "WinNT" ) );
-        _serverStats.insert( pair <string, string>( "OSName", "Windows 7" ) );
+        BSONObjBuilder bSI, bSys, bOS;
+
+        bOS.append("Type", "Windows");
+        bOS.append("Distro", "Windows Server 2008");
+        bOS.append("Version", "7.1.0sp1");
+        _serverStats = bSI.obj()
+    }
+
+    bool ProcessInfo::processHasNumaEnabled() {
+        // TODO: possible to disable NUMA or read SRATs?
+        return false;
     }
 
     bool ProcessInfo::blockCheckSupported() {

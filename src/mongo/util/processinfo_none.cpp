@@ -41,18 +41,15 @@ namespace mongo {
         return -1;
     }
 
-    void ProcessInfo::getExtraInfo(BSONObjBuilder& info) {}
+    void ProcessInfo::getExtraInfo( BSONObjBuilder& info ) {}
 
-    void ProcessInfo::getSystemInfo( BSONObjBuilder& info ) {
-        if (_serverStats.empty())
-            // lazy load sysinfo
-            collectSystemInfo();
+    void ProcessInfo::getSystemInfo( BSONObjBuilder& info ) {}
+
+    void ProcessInfo::collectSystemInfo() {}
+
+    bool ProcessInfo::processHasNumaEnabled() {
+        return false;
     }
-
-    void ProcessInfo::collectSystemInfo() {
-        _serverStats.insert( pair <string, string>( "OSType", "Unknown" ) );
-    }
-
 
     bool ProcessInfo::blockCheckSupported() {
         return false;
