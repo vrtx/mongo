@@ -19,7 +19,6 @@
 #include "processinfo.h"
 #include <iostream>
 #include <psapi.h>
-#include "../bson/bsonobjbuilder.h"
 using namespace std;
 
 int getpid() {
@@ -93,6 +92,27 @@ namespace mongo {
             info.append("availPageFileMB", static_cast<int>(mse.ullAvailPageFile / 1024 / 1024));
             info.append("ramMB", static_cast<int>(mse.ullTotalPhys / 1024 / 1024));
         }
+    }
+
+    void ProcessInfo::getSystemInfo( BSONObjBuilder& info ) {
+        if (_serverStats.empty())
+            // lazy load sysinfo
+            collectSystemInfo();
+        info.append("host", _serverStats);
+    }
+
+    void ProcessInfo::collectSystemInfo() {
+        BSONObjBuilder bSI, bSys, bOS;
+
+        bOS.append("type", "Windows");
+        bOS.append("distro", "Windows Server 2008");
+        bOS.append("version", "7.1.0sp1");
+        _serverStats = bSI.obj()
+    }
+
+    bool ProcessInfo::processHasNumaEnabled() {
+        // TODO: possible to disable NUMA or read SRATs?
+        return false;
     }
 
     bool ProcessInfo::blockCheckSupported() {

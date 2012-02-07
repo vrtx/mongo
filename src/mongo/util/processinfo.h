@@ -19,7 +19,7 @@
 
 #include <sys/types.h>
 #include <string>
-
+#include <db/jsobj.h>
 #ifndef _WIN32
 #include <unistd.h>
 #else
@@ -28,8 +28,6 @@ int getpid();
 #endif
 
 namespace mongo {
-
-    class BSONObjBuilder;
 
     class ProcessInfo {
     public:
@@ -51,13 +49,29 @@ namespace mongo {
          */
         void getExtraInfo(BSONObjBuilder& info);
 
+        /**
+         * Get host system info
+          */
+        void getSystemInfo(BSONObjBuilder& info);
+
+        /**
+         * Collect host system info
+          */
+        void collectSystemInfo();
+
         bool supported();
+
+        /**
+         * Determine if NUMA is enabled
+         */
+        bool processHasNumaEnabled();
 
         static bool blockCheckSupported();
         static bool blockInMemory( char * start );
 
     private:
         pid_t _pid;
+        static BSONObj _serverStats;
     };
 
     void writePidFile( const std::string& path );
