@@ -19,6 +19,7 @@
 #include "processinfo.h"
 #include <iostream>
 #include <psapi.h>
+
 using namespace std;
 
 int getpid() {
@@ -92,10 +93,11 @@ namespace mongo {
             info.append("availPageFileMB", static_cast<int>(mse.ullAvailPageFile / 1024 / 1024));
             info.append("ramMB", static_cast<int>(mse.ullTotalPhys / 1024 / 1024));
         }
+        getSystemInfo(info);
     }
 
     void ProcessInfo::getSystemInfo( BSONObjBuilder& info ) {
-        if (_serverStats.empty())
+        if (_serverStats.isEmpty())
             // lazy load sysinfo
             collectSystemInfo();
         info.append("host", _serverStats);
@@ -103,11 +105,65 @@ namespace mongo {
 
     void ProcessInfo::collectSystemInfo() {
         BSONObjBuilder bSI, bSys, bOS;
+        stringstream verstr;
+        string osName;
+        OSVERSIONINFO osvi;
+        BOOL ignored;
+        // SYSTEM_INFO sysInfo;
+        // PGNSI pGNSI;
+        // PGPI pGPI;
 
+        // populate the os version struct
+        // ZeroMemory( &sysInfo, sizeof(SYSTEM_INFO));
+        ZeroMemory( &osvi, sizeof( OSVERSIONINFO ));
+        osvi.dwOSVersionInfoSize = sizeof( OSVERSIONINFO );
+        ignored = GetVersionEx( &osvi );
+        osName = "Microsoft ";
+
+        switch ( osvi.dwMajorVersion ) {
+        case 6:
+            switch (osvi.dwMinorVersion) {
+                case 2:
+                    osName += "Windows Server 8";
+                    break;
+                case 1:
+                    osName += "Windows Server 2008 R2";
+                    break;
+                case 0:
+                    osName += "Windows Server 2008";
+                    break;
+                default:
+                    osName += "Windows (Unkown Version)";
+                    break;
+            }
+            break;
+        case 5:
+            switch (osvi.dwMinorVersion) {
+                case 2:
+                    osName += "Windows Server 2003";
+                    break;
+                case 1:
+                    osName += "Windows XP";
+                    break;
+                case 0:
+                    osName += "Windows 2000";
+                    break;
+                default:
+                    osName += "Windows (Unkown Version)";
+                    break;
+            }
+            break;
+        }
+
+        // osName += " ";
+        // osName += string(osvi.szCSDVersion);
+        verstr << osvi.dwMajorVersion << "." << osvi.dwMinorVersion << " (build " << osvi.dwBuildNumber << ")";
         bOS.append("type", "Windows");
-        bOS.append("distro", "Windows Server 2008");
-        bOS.append("version", "7.1.0sp1");
-        _serverStats = bSI.obj()
+        bOS.append("distro", osName);
+        bOS.append("version", verstr.str());
+        bSI.append("os", bOS.obj().copy());
+        bSI.append("system", bSys.obj().copy());
+        _serverStats = bSI.obj().copy();
     }
 
     bool ProcessInfo::processHasNumaEnabled() {
