@@ -198,6 +198,7 @@ int _main(int argc, char* argv[]) {
     sharding_options.add_options()
     ( "configdb" , po::value<string>() , "1 or 3 comma separated config servers" )
     ( "test" , "just run unit tests" )
+    ( "localThreshold", po::value <int>(), "ping time (in ms) for a node to be considered local (default 10ms)")
     ( "upgrade" , "upgrade meta data version" )
     ( "chunkSize" , po::value<int>(), "maximum amount of data per chunk" )
     ( "ipv6", "enable IPv6 support (disabled by default)" )
@@ -227,6 +228,10 @@ int _main(int argc, char* argv[]) {
 
     if ( params.count( "chunkSize" ) ) {
         Chunk::MaxChunkSize = params["chunkSize"].as<int>() * 1024 * 1024;
+    }
+
+    if ( params.count( "localThreshold" ) ) {
+        ReplicaSetMonitor::localThresholldMillis = params["localThreshold"].as<int>();
     }
 
     if ( params.count( "ipv6" ) ) {

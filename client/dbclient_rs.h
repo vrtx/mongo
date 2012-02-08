@@ -76,9 +76,13 @@ namespace mongo {
         /** @return prev if its still ok, and if not returns a random slave that is ok for reads */
         HostAndPort getSlave( const HostAndPort& prev );
 
-        /** @return a random slave that is ok for reads */
+        /** @return a preferred slave that is ok for reads */
         HostAndPort getSlave();
 
+        /**
+         * Get connection from node offset
+         */
+        shared_ptr<DBClientConnection> getConnection( const HostAndPort& server ) const;
 
         /**
          * notify the monitor that server has faild
@@ -97,6 +101,8 @@ namespace mongo {
         bool contains( const string& server ) const;
         
         void appendInfo( BSONObjBuilder& b ) const;
+
+        static int localThresholldMillis;
 
     private:
         /**
@@ -140,8 +146,9 @@ namespace mongo {
 
 
         int _find( const string& server ) const ;
-        int _find_inlock( const string& server ) const ;
         int _find( const HostAndPort& server ) const ;
+        int _find_inlock( const string& server ) const ;
+        int _find_inlock( const HostAndPort& server ) const ;
 
         mutable mongo::mutex _lock; // protects _nodes
         mutable mongo::mutex  _checkConnectionLock;
@@ -149,13 +156,19 @@ namespace mongo {
         string _name;
         struct Node {
             Node( const HostAndPort& a , DBClientConnection* c ) 
-                : addr( a ) , conn(c) , ok(true) , 
-                  ismaster(false), secondary( false ) , hidden( false ) , pingTimeMillis(0) {
+                : addr( a ), conn( c ), ok( true ), ismaster( false ),
+                  secondary( false ) , hidden( false ) , pingTimeMillis( 0 ) {
                 ok = conn.get() == NULL;
+                for (int i = 0; i < 3; ++i)
+                    pastPings[i] = 0;
             }
 
             bool okForSecondaryQueries() const {
                 return ok && secondary && ! hidden;
+            }
+
+            bool okForLocal() const {
+                return (pingTimeMillis <= ReplicaSetMonitor::localThresholldMillis);
             }
 
             BSONObj toBSON() const {
@@ -184,9 +197,9 @@ namespace mongo {
             bool ismaster;
             bool secondary; 
             bool hidden;
-            
-            int pingTimeMillis;
 
+            int pingTimeMillis;
+            int pastPings[3];
         };
 
         /**
@@ -309,8 +322,8 @@ namespace mongo {
         scoped_ptr<DBClientConnection> _master;
 
         HostAndPort _slaveHost;
-        scoped_ptr<DBClientConnection> _slave;
-        
+        shared_ptr<DBClientConnection> _slave;
+
         double _so_timeout;
 
         /**

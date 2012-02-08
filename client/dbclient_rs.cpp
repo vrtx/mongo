@@ -271,21 +271,37 @@ namespace mongo {
 
         scoped_lock lk( _lock );
 
+        // select the next local node
         for ( unsigned ii = 0; ii < _nodes.size(); ii++ ) {
             _nextSlave = ( _nextSlave + 1 ) % _nodes.size();
             if ( _nextSlave != _master ) {
-                if ( _nodes[ _nextSlave ].okForSecondaryQueries() )
+                if ( _nodes[ _nextSlave ].okForSecondaryQueries() && _nodes[ _nextSlave ].okForLocal() ) {
+                    log() << "selecting local node " << _nextSlave << "(" << _nodes[ _nextSlave ].addr << ") with ping time " << _nodes[ _nextSlave ].pingTimeMillis << endl;
                     return _nodes[ _nextSlave ].addr;
+                }
+                LOG(2) << "dbclient_rs getSlave not selecting " << _nodes[_nextSlave] << ", not ok for local queries" << endl;
+            }
+        }
+
+        // select the next node regardless of location
+        for ( unsigned ii = 0; ii < _nodes.size(); ii++ ) {
+            _nextSlave = ( _nextSlave + 1 ) % _nodes.size();
+            if ( _nextSlave != _master ) {
+                if ( _nodes[ _nextSlave ].okForSecondaryQueries() ) {
+                    log() << "selecting non-local node " << _nextSlave << " with ping time " << _nodes[ _nextSlave ].addr << endl;
+                    return _nodes[ _nextSlave ].addr;
+                }
                 LOG(2) << "dbclient_rs getSlave not selecting " << _nodes[_nextSlave] << ", not currently okForSecondaryQueries" << endl;
             }
         }
 
+        // select master if no secondaries are available
         if( _master >= 0 ) { 
             assert( static_cast<unsigned>(_master) < _nodes.size() );
             LOG(2) << "dbclient_rs getSlave no member in secondary state found, returning primary " << _nodes[ _master ] << endl;
             return _nodes[_master].addr;
         }
-        
+
         LOG(2) << "dbclient_rs getSlave no suitable member found, returning first node " << _nodes[ 0 ] << endl;
         assert( _nodes.size() > 0 );
         return _nodes[0].addr;
@@ -300,6 +316,16 @@ namespace mongo {
             scoped_lock lk( _lock );
             _nodes[x].ok = false;
         }
+    }
+
+    /**
+     * Get connection from HostAndPort
+     */
+    shared_ptr<DBClientConnection> ReplicaSetMonitor::getConnection( const HostAndPort& server ) const {
+        scoped_lock lk( _lock );
+        int x = _find_inlock( server );
+        assert( x >= 0 );
+        return _nodes[x].conn;
     }
 
     void ReplicaSetMonitor::_checkStatus(DBClientConnection *conn) {
@@ -473,7 +499,18 @@ namespace mongo {
             }
 
             if ( nodesOffset >= 0 ) {
-                _nodes[nodesOffset].pingTimeMillis = t.millis();
+                // update running average pingTimeMillis
+                _nodes[nodesOffset].pastPings[0] = _nodes[nodesOffset].pastPings[1];
+                _nodes[nodesOffset].pastPings[1] = _nodes[nodesOffset].pastPings[2];
+                _nodes[nodesOffset].pastPings[2] = t.millis();
+                _nodes[nodesOffset].pingTimeMillis = (_nodes[nodesOffset].pastPings[0] +
+                                                      _nodes[nodesOffset].pastPings[1] +
+                                                      _nodes[nodesOffset].pastPings[2]) / 3;
+                log() << "Calculated ping average: " << _nodes[nodesOffset].pingTimeMillis << " from [" <<
+                       _nodes[nodesOffset].pastPings[0] << ", " <<
+                       _nodes[nodesOffset].pastPings[1] << ", " <<
+                       _nodes[nodesOffset].pastPings[2] << "] for host " << _nodes[nodesOffset].addr << endl;
+
                 _nodes[nodesOffset].hidden = o["hidden"].trueValue();
                 _nodes[nodesOffset].secondary = o["secondary"].trueValue();
                 _nodes[nodesOffset].ismaster = o["ismaster"].trueValue();
@@ -587,6 +624,11 @@ namespace mongo {
         return _find_inlock( server );
     }
 
+    int ReplicaSetMonitor::_find( const HostAndPort& server ) const {
+        scoped_lock lk( _lock );
+        return _find_inlock( server );
+    }
+
     int ReplicaSetMonitor::_find_inlock( const string& server ) const {
         for ( unsigned i=0; i<_nodes.size(); i++ )
             if ( _nodes[i].addr == server )
@@ -594,15 +636,13 @@ namespace mongo {
         return -1;
     }
 
-
-    int ReplicaSetMonitor::_find( const HostAndPort& server ) const {
-        scoped_lock lk( _lock );
+    int ReplicaSetMonitor::_find_inlock( const HostAndPort& server ) const {
         for ( unsigned i=0; i<_nodes.size(); i++ )
             if ( _nodes[i].addr == server )
                 return i;
         return -1;
     }
-    
+
     void ReplicaSetMonitor::appendInfo( BSONObjBuilder& b ) const {
         scoped_lock lk( _lock );
         BSONArrayBuilder hosts( b.subarrayStart( "hosts" ) );
@@ -623,6 +663,8 @@ namespace mongo {
     }
     
 
+
+    int ReplicaSetMonitor::localThresholldMillis = 10;
     mongo::mutex ReplicaSetMonitor::_setsLock( "ReplicaSetMonitor" );
     map<string,ReplicaSetMonitorPtr> ReplicaSetMonitor::_sets;
     ReplicaSetMonitor::ConfigChangeHook ReplicaSetMonitor::_hook;
@@ -660,21 +702,17 @@ namespace mongo {
     }
 
     DBClientConnection * DBClientReplicaSet::checkSlave() {
-        HostAndPort h = _monitor->getSlave( _slaveHost );
+        _slaveHost = _monitor->getSlave();
+        _slave = _monitor->getConnection(_slaveHost);
 
-        if ( h == _slaveHost && _slave ) {
-            if ( ! _slave->isFailed() )
-                return _slave.get();
+        if ( _slave->isFailed() ) {
+            // slave connection failed.  notify monitor and try to reconnect.
             _monitor->notifySlaveFailure( _slaveHost );
-            _slaveHost = _monitor->getSlave();
-        } 
-        else {
-            _slaveHost = h;
+            _slave.reset( new DBClientConnection( true , this , _so_timeout ) );
+            _slave->connect( _slaveHost );
+            _auth( _slave.get() );
         }
 
-        _slave.reset( new DBClientConnection( true , this , _so_timeout ) );
-        _slave->connect( _slaveHost );
-        _auth( _slave.get() );
         return _slave.get();
     }
 
