@@ -702,20 +702,23 @@ namespace mongo {
     }
 
     DBClientConnection * DBClientReplicaSet::checkSlave() {
-        _slaveHost = _monitor->getSlave();
-        _slave = _monitor->getConnection(_slaveHost);
+        int attempts = 0;
 
-        if ( _slave->isFailed() ) {
-            // slave connection failed.  notify monitor and try to reconnect.
-            _monitor->notifySlaveFailure( _slaveHost );
-            _slave.reset( new DBClientConnection( true , this , _so_timeout ) );
-            _slave->connect( _slaveHost );
-            _auth( _slave.get() );
+        _slaveHost = _monitor->getSlave();
+        _slave = _monitor->getConnection( _slaveHost );
+
+        while ( _slave->isFailed() ) {
+            // slave connection failed.  notify monitor and try next slave while connection is reattempted
+            _monitor->notifySlaveFailure( _slaveHost );     // mark slave as not ok
+            _slaveHost = _monitor->getSlave();              // get the next ok slave
+            _slave = _monitor->getConnection( _slaveHost ); // make sure this one hasn't failed
+            if ( ++attempts % 10 == 0 )
+                // sleep for a second if 10 slaves failed in a row
+                sleepsecs( 1 );
         }
 
         return _slave.get();
     }
-
 
     void DBClientReplicaSet::_auth( DBClientConnection * conn ) {
         for ( list<AuthInfo>::iterator i=_auths.begin(); i!=_auths.end(); ++i ) {
