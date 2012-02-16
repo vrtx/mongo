@@ -105,14 +105,14 @@ namespace mongo {
         }
 
         info.append("page_faults", taskInfo.pageins);
-        getSystemInfo(info);
     }
 
     void ProcessInfo::getSystemInfo( BSONObjBuilder& info ) {
         if (_serverStats.isEmpty())
             // lazy load sysinfo
             collectSystemInfo();
-        info.append("host", _serverStats);
+        info.append("os", _serverStats.getField("os").Obj());
+        info.append("system", _serverStats.getField("system").Obj());
     }
 
     enum sysctlValueType {
@@ -174,7 +174,6 @@ namespace mongo {
         bSI.append(StringData("system"), bSys.obj().copy());
         bSI.append(StringData("os"), bOS.obj().copy());
         _serverStats = bSI.obj().copy();
-        log() << "Performance: " << _serverStats.jsonString(Strict, true) << endl;
     }
 
     bool ProcessInfo::processHasNumaEnabled() {

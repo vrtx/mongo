@@ -629,6 +629,29 @@ namespace mongo {
         }
     } cmdServerStatus;
 
+    class CmdHostInfo : public Command {
+    public:
+        CmdHostInfo() : Command("hostInfo", true) {}
+        virtual bool slaveOk() const {
+            return true;
+        }
+
+        virtual LockType locktype() const { return NONE; }
+
+        virtual void help( stringstream& help ) const {
+            help << "returns information about the daemon's host";
+        }
+
+        bool run(const string& dbname, BSONObj& cmdObj, int, string& errmsg, BSONObjBuilder& result, bool fromRepl) {
+            ProcessInfo p;
+            result.append( "host" , prettyHostName() );
+            result.append( "version", versionString );
+            result.appendDate( "localTime" , jsTime() );
+            p.getSystemInfo(result);
+            return true;
+        }
+    } cmdHostInfo;
+
     class CmdGetOpTime : public Command {
     public:
         virtual bool slaveOk() const {

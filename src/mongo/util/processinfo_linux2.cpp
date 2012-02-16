@@ -197,91 +197,91 @@ namespace mongo {
     class LinuxSysHelper {
     public:
 
-    /**
-    * Read the first 1023 bytes from a file
-    */
-    static string readLineFromFile( const char* fname ) {
-        FILE* f;
-        char fstr[1024] = { 0 };
+        /**
+        * Read the first 1023 bytes from a file
+        */
+        static string readLineFromFile( const char* fname ) {
+            FILE* f;
+            char fstr[1024] = { 0 };
 
-        f = fopen( fname, "r" );
-        if ( f != NULL ) {
-            if ( fgets( fstr, 1023, f ) != NULL )
-                fstr[strlen( fstr ) < 1 ? 0 : strlen( fstr ) - 1] = '\0';
-            fclose( f );
+            f = fopen( fname, "r" );
+            if ( f != NULL ) {
+                if ( fgets( fstr, 1023, f ) != NULL )
+                    fstr[strlen( fstr ) < 1 ? 0 : strlen( fstr ) - 1] = '\0';
+                fclose( f );
+            }
+            return fstr;
         }
-        return fstr;
-    }
 
-    /**
-    * Determine linux distro and version
-    */
-    static void getLinuxDistro( string& name, string& version ) {
-        File f;
-        char buf[4096] = { 0 };
+        /**
+        * Determine linux distro and version
+        */
+        static void getLinuxDistro( string& name, string& version ) {
+            File f;
+            char buf[4096] = { 0 };
 
-        // try lsb file first
-        if ( boost::filesystem::exists( "/etc/lsb-release" ) ) {
-            f.open( "/etc/lsb-release", true );
-            if ( ! f.is_open() || f.bad() )
-                return;
-            f.read( 0, buf, f.len() > 4095 ? 4095 : f.len() );
+            // try lsb file first
+            if ( boost::filesystem::exists( "/etc/lsb-release" ) ) {
+                f.open( "/etc/lsb-release", true );
+                if ( ! f.is_open() || f.bad() )
+                    return;
+                f.read( 0, buf, f.len() > 4095 ? 4095 : f.len() );
 
-            // find the distribution name and version in the contents.
-            // format:  KEY=VAL\n
-            string contents = buf;
-            unsigned lineCnt = 0;
-            try {
-                while ( lineCnt < contents.length() - 1 && contents.substr( lineCnt ).find( '\n' ) != string::npos ) {
-                    // until we hit the last newline or eof
-                    string line = contents.substr(lineCnt, contents.substr( lineCnt ).find( '\n' ));
-                    lineCnt += contents.substr( lineCnt ).find( '\n' ) + 1;
-                    size_t delim = line.find( '=' );
-                    string key = line.substr( 0, delim );
-                    string val = line.substr( delim + 1 );  // 0-based offset of delim
-                    if ( key.compare( "DISTRIB_ID" ) == 0 )
-                        name = val;
-                    if ( string(key).compare( "DISTRIB_RELEASE" ) == 0 )
-                        version = val;
+                // find the distribution name and version in the contents.
+                // format:  KEY=VAL\n
+                string contents = buf;
+                unsigned lineCnt = 0;
+                try {
+                    while ( lineCnt < contents.length() - 1 && contents.substr( lineCnt ).find( '\n' ) != string::npos ) {
+                        // until we hit the last newline or eof
+                        string line = contents.substr(lineCnt, contents.substr( lineCnt ).find( '\n' ));
+                        lineCnt += contents.substr( lineCnt ).find( '\n' ) + 1;
+                        size_t delim = line.find( '=' );
+                        string key = line.substr( 0, delim );
+                        string val = line.substr( delim + 1 );  // 0-based offset of delim
+                        if ( key.compare( "DISTRIB_ID" ) == 0 )
+                            name = val;
+                        if ( string(key).compare( "DISTRIB_RELEASE" ) == 0 )
+                            version = val;
+                    }
                 }
+                catch (const std::out_of_range &e) {
+                    // attempt to get invalid substr
+                }
+                return; // return with lsb-relase data
             }
-            catch (const std::out_of_range &e) {
-                // attempt to get invalid substr
+            // // try redhat-release file
+            // if ( boost::filesystem::exists( "/etc/lsb-release" ) ) {
+            // f.open( "/etc/lsb-release", true );
+            // if ( ! f.is_open() || f.bad() )
+            //   return;
+            // f.read( 0, buf, f.len() > 4095 ? 4095 : f.len() );
+            // 
+            // // find the combined name and version string
+
+        }
+
+        /**
+        * Get system memory total
+        */
+        static string getSystemMemorySize() {
+            string meminfo = readLineFromFile("/proc/meminfo");
+            size_t lineOff= 0;
+            if ( !meminfo.empty() && (lineOff = meminfo.find("MemTotal")) != string::npos ) {
+                // found MemTotal line.  capture everything between 'MemTotal:' and ' kB'.
+                lineOff = meminfo.substr( lineOff ).find( ':' ) + 1;
+                meminfo = meminfo.substr( lineOff, meminfo.substr( lineOff ).find( "kB" ) - 1);
+                lineOff = 0;
+
+                // trim whitespace and append 000 to replace kB.
+                while ( isspace( meminfo.at( lineOff ) ) ) lineOff++;
+                meminfo = meminfo.substr( lineOff ).append("000");
             }
-            return; // return with lsb-relase data
+            else {
+                meminfo = "";
+            }
+            return meminfo;
         }
-        // // try redhat-release file
-        // if ( boost::filesystem::exists( "/etc/lsb-release" ) ) {
-        // f.open( "/etc/lsb-release", true );
-        // if ( ! f.is_open() || f.bad() )
-        //   return;
-        // f.read( 0, buf, f.len() > 4095 ? 4095 : f.len() );
-        // 
-        // // find the combined name and version string
-
-    }
-
-    /**
-    * Get system memory total
-    */
-    static string getSystemMemorySize() {
-        string meminfo = readLineFromFile("/proc/meminfo");
-        size_t lineOff= 0;
-        if ( !meminfo.empty() && (lineOff = meminfo.find("MemTotal")) != string::npos ) {
-            // found MemTotal line.  capture everything between 'MemTotal:' and ' kB'.
-            lineOff = meminfo.substr( lineOff ).find( ':' ) + 1;
-            meminfo = meminfo.substr( lineOff, meminfo.substr( lineOff ).find( "kB" ) - 1);
-            lineOff = 0;
-
-            // trim whitespace and append 000 to replace kB.
-            while ( isspace( meminfo.at( lineOff ) ) ) lineOff++;
-            meminfo = meminfo.substr( lineOff ).append("000");
-        }
-        else {
-            meminfo = "";
-        }
-        return meminfo;
-    }
 
     };
 
@@ -314,15 +314,14 @@ namespace mongo {
 
         LinuxProc p(_pid);
         info.append("page_faults", (int)p._maj_flt);
-        getSystemInfo(info);
     }
 
     void ProcessInfo::getSystemInfo( BSONObjBuilder& info ) {
         if (_serverStats.isEmpty())
             // lazy load sysinfo
             collectSystemInfo();
-        info.append("host", _serverStats);
-        log() << "getSystemInfo: " << _serverStats.jsonString(Strict, true) << endl;
+        info.append("os", _serverStats.getField("os").Obj());
+        info.append("system", _serverStats.getField("system").Obj());
     }
 
     /**
