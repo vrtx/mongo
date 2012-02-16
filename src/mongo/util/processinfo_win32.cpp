@@ -107,30 +107,35 @@ namespace mongo {
         BSONObjBuilder bSI, bSys, bOS;
         stringstream verstr;
         string osName;
-        OSVERSIONINFO osvi;
+        OSVERSIONINFOEX osvi;
         BOOL ignored;
-        // SYSTEM_INFO sysInfo;
-        // PGNSI pGNSI;
-        // PGPI pGPI;
 
         // populate the os version struct
-        // ZeroMemory( &sysInfo, sizeof(SYSTEM_INFO));
-        ZeroMemory( &osvi, sizeof( OSVERSIONINFO ));
+        ZeroMemory( &osvi, sizeof( OSVERSIONINFOEX ));
         osvi.dwOSVersionInfoSize = sizeof( OSVERSIONINFO );
-        ignored = GetVersionEx( &osvi );
+        ignored = GetVersionEx( (OSVERSIONINFO*)&osvi );
         osName = "Microsoft ";
 
         switch ( osvi.dwMajorVersion ) {
         case 6:
             switch (osvi.dwMinorVersion) {
                 case 2:
-                    osName += "Windows Server 8";
+                    if (osvi.wProductType == VER_NT_WORKSTATION)
+                        osName += "Windows 8";
+                    else
+                        osName += "Windows Server 8";
                     break;
                 case 1:
-                    osName += "Windows Server 2008 R2";
+                    if (osvi.wProductType == VER_NT_WORKSTATION)
+                        osName += "Windows 7";
+                    else
+                        osName += "Windows Server 2008 R2";
                     break;
                 case 0:
-                    osName += "Windows Server 2008";
+                    if (osvi.wProductType == VER_NT_WORKSTATION)
+                        osName += "Windows Vista";
+                    else
+                        osName += "Windows Server 2008";
                     break;
                 default:
                     osName += "Windows (Unkown Version)";
@@ -146,7 +151,10 @@ namespace mongo {
                     osName += "Windows XP";
                     break;
                 case 0:
-                    osName += "Windows 2000";
+                    if (osvi.wProductType == VER_NT_WORKSTATION)
+                        osName += "Windows 2000 Professional";
+                    else
+                        osName += "Windows 2000 Server";
                     break;
                 default:
                     osName += "Windows (Unkown Version)";
@@ -167,7 +175,7 @@ namespace mongo {
     }
 
     bool ProcessInfo::processHasNumaEnabled() {
-        // TODO: possible to disable NUMA or read SRATs?
+        // TODO: detect/disable NUMA; maybe read SRATs?
         return false;
     }
 
