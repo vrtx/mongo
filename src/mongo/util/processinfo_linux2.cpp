@@ -333,13 +333,14 @@ namespace mongo {
         LinuxSysHelper::getLinuxDistro(distroName, distroVersion);
 
         bOS.append("type", "Linux");
-        bOS.append("distro", distroName);
+        bOS.append("name", distroName);
         bOS.append("version", distroVersion);
         bOS.append("versionSignature", LinuxSysHelper::readLineFromFile("/proc/version_signature"));
         bOS.append("versionString", LinuxSysHelper::readLineFromFile("/proc/version"));
         bOS.append("libcVersion", gnu_get_libc_version());
-        bSys.append("numa", processHasNumaEnabled() ? "yes" : "no");
+        bSys.append("numaEnabled", processHasNumaEnabled() ? "yes" : "no");
         bSys.append("memSize",  LinuxSysHelper::getSystemMemorySize());
+        bSys.append("memBits",  ( sizeof(int*) == 4 ? 32 : 64 ) );
 
         // // The following can also be parsed from procfs if useful
         // bOS.append("BootTime", "");

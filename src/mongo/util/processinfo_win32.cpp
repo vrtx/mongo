@@ -163,12 +163,11 @@ namespace mongo {
             break;
         }
 
-        // osName += " ";
-        // osName += string(osvi.szCSDVersion);
         verstr << osvi.dwMajorVersion << "." << osvi.dwMinorVersion << " (build " << osvi.dwBuildNumber << ")";
         bOS.append("type", "Windows");
-        bOS.append("distro", osName);
+        bOS.append("name", osName);
         bOS.append("version", verstr.str());
+        bSys.append("memBits",  ( sizeof(int*) == 4 ? 32 : 64 ) );
         bSI.append("os", bOS.obj().copy());
         bSI.append("system", bSys.obj().copy());
         _serverStats = bSI.obj().copy();

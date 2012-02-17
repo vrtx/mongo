@@ -153,7 +153,7 @@ namespace mongo {
     void ProcessInfo::collectSystemInfo() {
         BSONObjBuilder bSI, bSys, bOS;
         bOS.append("type", "Darwin");
-        bOS.append("distro", "Mac OS X");
+        bOS.append("name", "Mac OS X");
         bOS.append("version", getSysctlByName("kern.osrelease"));
         bOS.append("versionString", getSysctlByName("kern.version"));
         bOS.append("bootTime", getSysctlByName("kern.boottime", sysctlValue_Int));
@@ -171,6 +171,7 @@ namespace mongo {
         bSys.append("cpuExtraFeatures", getSysctlByName("machdep.cpu.extfeatures"));
         bSys.append("pageSize", getSysctlByName("hw.pagesize", sysctlValue_Int));
         bSys.append("scheduler", getSysctlByName("kern.sched"));
+        bSys.append("memBits",  ( sizeof(int*) == 4 ? 32 : 64 ) );
         bSI.append(StringData("system"), bSys.obj().copy());
         bSI.append(StringData("os"), bOS.obj().copy());
         _serverStats = bSI.obj().copy();
