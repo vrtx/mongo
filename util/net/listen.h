@@ -26,7 +26,7 @@ namespace mongo {
     class Listener : boost::noncopyable {
     public:
 
-        Listener(const string& name, const string &ip, int port, bool logConnect=true );
+        Listener(const string& name, const string &ip, int port);
 
         virtual ~Listener();
         
@@ -72,7 +72,6 @@ namespace mongo {
     private:
         string _name;
         string _ip;
-        bool _logConnect;
         long long _elapsedTime;
         
 #ifdef MONGO_SSL

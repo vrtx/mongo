@@ -96,8 +96,8 @@ namespace mongo {
 
     }
     
-    Listener::Listener(const string& name, const string &ip, int port, bool logConnect ) 
-        : _port(port), _name(name), _ip(ip), _logConnect(logConnect), _elapsedTime(0) { 
+    Listener::Listener(const string& name, const string &ip, int port) 
+        : _port(port), _name(name), _ip(ip), _elapsedTime(0) { 
 #ifdef MONGO_SSL
         _ssl = 0;
         _sslPort = 0;
@@ -238,7 +238,6 @@ namespace mongo {
         _logListen( _port , false );
 #endif
 
-        static long connNumber = 0;
         struct timeval maxSelectTime;
         while ( ! inShutdown() ) {
             fd_set fds[1];
@@ -307,9 +306,9 @@ namespace mongo {
                 }
                 if (from.getType() != AF_UNIX)
                     disableNagle(s);
-                if ( _logConnect && ! cmdLine.quiet )
-                    log() << "connection accepted from " << from.toString() << " #" << ++connNumber << endl;
-                
+                if ( ! cmdLine.quiet )
+                    log(3) << "initial connection accepted from " << from.toString() << endl;
+
                 Socket newSock = Socket(s, from);
 #ifdef MONGO_SSL
                 if ( _ssl && ( _sslPort == 0 || sslSocks.count(*it) ) ) {

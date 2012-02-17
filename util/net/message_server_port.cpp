@@ -42,21 +42,23 @@ namespace mongo {
             TicketHolderReleaser connTicketReleaser( &connTicketHolder );
 
             setThreadName( "conn" );
-            
+
             assert( inPort );
             inPort->setLogLevel(1);
             scoped_ptr<MessagingPort> p( inPort );
 
             p->postFork();
 
-            string otherSide;
+            string otherSide = p->remoteString();
+
+            static long connNumber = 0;
+            if ( ! cmdLine.quiet )
+                log() << "connection accepted from " << otherSide << endl;
 
             Message m;
             try {
                 LastError * le = new LastError();
                 lastError.reset( le ); // lastError now has ownership
-
-                otherSide = p->remoteString();
 
                 handler->connected( p.get() );
 

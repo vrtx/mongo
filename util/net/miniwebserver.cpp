@@ -24,7 +24,7 @@
 namespace mongo {
 
     MiniWebServer::MiniWebServer(const string& name, const string &ip, int port)
-        : Listener(name, ip, port, false)
+        : Listener(name, ip, port)
     {}
 
     string MiniWebServer::parseURL( const char * buf ) {
