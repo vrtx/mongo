@@ -96,11 +96,11 @@ namespace mongo {
     }
 
     void ProcessInfo::getSystemInfo( BSONObjBuilder& info ) {
-        if (_serverStats.isEmpty())
+        if (_hostStats.isEmpty())
             // lazy load sysinfo
             collectSystemInfo();
-        info.append("os", _serverStats.getField("os").Obj());
-        info.append("system", _serverStats.getField("system").Obj());
+        info.append("os", _hostStats.getField("os").Obj());
+        info.append("system", _hostStats.getField("system").Obj());
     }
 
     void ProcessInfo::collectSystemInfo() {
@@ -170,7 +170,7 @@ namespace mongo {
         bSys.append("memBits",  ( sizeof(int*) == 4 ? 32 : 64 ) );
         bSI.append("os", bOS.obj().copy());
         bSI.append("system", bSys.obj().copy());
-        _serverStats = bSI.obj().copy();
+        _hostStats = bSI.obj().copy();
     }
 
     bool ProcessInfo::processHasNumaEnabled() {

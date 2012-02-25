@@ -108,11 +108,14 @@ namespace mongo {
     }
 
     void ProcessInfo::getSystemInfo( BSONObjBuilder& info ) {
-        if (_serverStats.isEmpty())
-            // lazy load sysinfo
-            collectSystemInfo();
-        info.append("os", _serverStats.getField("os").Obj());
-        info.append("system", _serverStats.getField("system").Obj());
+        {
+            scoped_lock lk(_statsMutex);
+            if (_hostStats.isEmpty())
+                // lazy load sysinfo
+                collectSystemInfo();
+        }
+        info.append("os", _hostStats.getField("os").Obj());
+        info.append("system", _hostStats.getField("system").Obj());
     }
 
     enum sysctlValueType {
@@ -174,7 +177,7 @@ namespace mongo {
         bSys.append("memBits",  ( sizeof(int*) == 4 ? 32 : 64 ) );
         bSI.append(StringData("system"), bSys.obj().copy());
         bSI.append(StringData("os"), bOS.obj().copy());
-        _serverStats = bSI.obj().copy();
+        _hostStats = bSI.obj().copy();
     }
 
     bool ProcessInfo::processHasNumaEnabled() {

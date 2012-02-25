@@ -47,7 +47,8 @@ namespace mongo {
         pidFileWiper.write( path );
     }
 
-    // static _serverStats data
-    BSONObj ProcessInfo::_serverStats;
+    // static _hostStats data
+    BSONObj ProcessInfo::_hostStats;
+    mongo::mutex ProcessInfo::_statsMutex;
 
 }

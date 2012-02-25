@@ -284,15 +284,9 @@ namespace mongo {
                     // file exists but can't be opened
                     return;
 		// read up to 512 bytes
-		int len = f.len() > 512 ? : 512 : f.len();
-                f.read( 0, buf, len );
-		buf[ len ] = '\0';
+                f.read( 0, buf, f.len() > 512 ? 512 : f.len() );
+		buf[ (f.len() > 512 ? 512 : f.len()) ] = '\0';
                 name = buf;
-		size_t nl = 0;
-		if ( ( nl = string.find( '\n', nl ) ) != string::npos )
-		    // stop at first newline
-		    string.erase( nl );
-
                 version = ""; // no standard format for name and version.  needs additional parsing.
             }
 
@@ -354,11 +348,11 @@ namespace mongo {
     }
 
     void ProcessInfo::getSystemInfo( BSONObjBuilder& info ) {
-        if (_serverStats.isEmpty())
+        if (_hostStats.isEmpty())
             // lazy load sysinfo
             collectSystemInfo();
-        info.append("os", _serverStats.getField("os").Obj());
-        info.append("system", _serverStats.getField("system").Obj());
+        info.append("os", _hostStats.getField("os").Obj());
+        info.append("system", _hostStats.getField("system").Obj());
     }
 
     /**
@@ -381,7 +375,7 @@ namespace mongo {
 
         bSI.append(StringData("system"), bSys.obj());
         bSI.append(StringData("os"), bOS.obj());
-        _serverStats = bSI.obj();
+        _hostStats = bSI.obj();
   }
 
 
