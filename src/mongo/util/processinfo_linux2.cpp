@@ -294,7 +294,9 @@ namespace mongo {
                 if ( ( nl = name.find( '\n', nl ) ) != string::npos )
                     // stop at first newline
                     name.erase( nl );
-                version = ""; // no standard format for name and version.  needs additional parsing.
+                // no standard format for name and version.  use kernel version
+                version = "Kernel ";
+                version += LinuxSysHelper::readLineFromFile("/proc/sys/kernel/osrelease");
             }
         }
 
@@ -368,11 +370,13 @@ namespace mongo {
         BSONObjBuilder bSI, bSys, bOS;
         string distroName, distroVersion;
         LinuxSysHelper::getLinuxDistro(distroName, distroVersion);
-
+        string verSig = LinuxSysHelper::readLineFromFile("/proc/version_signature");
         bOS.append("type", "Linux");
         bOS.append("name", distroName);
         bOS.append("version", distroVersion);
-        bOS.append("versionSignature", LinuxSysHelper::readLineFromFile("/proc/version_signature"));
+        if (!verSig.empty())
+            // optional
+            bOS.append("versionSignature", verSig);
         bOS.append("versionString", LinuxSysHelper::readLineFromFile("/proc/version"));
         bOS.append("libcVersion", gnu_get_libc_version());
         bSys.append("numaEnabled", processHasNumaEnabled() ? "yes" : "no");
