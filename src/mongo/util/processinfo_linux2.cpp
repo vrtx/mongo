@@ -217,11 +217,11 @@ namespace mongo {
         * Determine linux distro and version
         */
         static void getLinuxDistro( string& name, string& version ) {
-            File f;
             char buf[4096] = { 0 };
 
-            // try lsb file first
+            // txsXSry lsb file first
             if ( boost::filesystem::exists( "/etc/lsb-release" ) ) {
+	        File f;
                 f.open( "/etc/lsb-release", true );
                 if ( ! f.is_open() || f.bad() )
                     return;
@@ -247,15 +247,16 @@ namespace mongo {
                 }
                 catch (const std::out_of_range &e) {
                     // attempt to get invalid substr
-                    f.close();
                 }
-                f.close();
                 return; // return with lsb-relase data
             }
+
             // try known flat-text file locations
-            // format: Slackware-x86_64 13.0, Red Hat Enterprise Linux Server release 5.6 (Tikanga)
+            // format: Slackware-x86_64 13.0, Red Hat Enterprise Linux Server release 5.6 (Tikanga), etc.
             typedef vector <string> pathvec;
             pathvec paths;
+	    pathvec::const_iterator i;
+	    bool found = false;
             paths.push_back( "/etc/system-release" );
             paths.push_back( "/etc/redhat-release" );
             paths.push_back( "/etc/gentoo-release" );
@@ -266,24 +267,27 @@ namespace mongo {
             paths.push_back( "/etc/sles-release" );
             paths.push_back( "/etc/debian_release" );
             paths.push_back( "/etc/slackware-version" );
-
-            paths.push_back( "" );  // blank entry is last
-            for ( pathvec::const_iterator i = paths.begin(); i != paths.end(); ++i )
+	    
+            for ( i = paths.begin(); i != paths.end(); ++i )
                 // for each path
-                if ( boost::filesystem::exists( *i ) )
+	        if ( boost::filesystem::exists( *i ) ) {
                     // if the file exists, break
+		    found = true;
                     break;
+	        }
 
-            if ( *i != "" ) {
+            if ( found ) {
                 // found a file
+	        File f;
                 f.open( i->c_str(), true );
                 if ( ! f.is_open() || f.bad() )
                     // file exists but can't be opened
                     return;
-                f.read( 0, buf, f.len() > 4095 ? 4095 : f.len() );
-                f.close();
+		// read up to 512 bytes
+                f.read( 0, buf, f.len() > 512 ? 512 : f.len() );
+		buf[ (f.len() > 512 ? 512 : f.len()) ] = '\0';
                 name = buf;
-                version = ""; // no standard format for name and version.  could parse common distros
+                version = ""; // no standard format for name and version.  needs additional parsing.
             }
 
         }
@@ -368,15 +372,6 @@ namespace mongo {
         bSys.append("numaEnabled", processHasNumaEnabled() ? "yes" : "no");
         bSys.append("memSize",  LinuxSysHelper::getSystemMemorySize());
         bSys.append("memBits",  ( sizeof(int*) == 4 ? 32 : 64 ) );
-
-        // // The following can also be parsed from procfs if useful
-        // bOS.append("BootTime", "");
-        // bSys.append("Architecture",  "");
-        // bSys.append("Model", "");
-        // bSys.append("NumCores", "");    // include hyperthreading
-        // bSys.append("PhysicalCores", "");
-        // bSys.append("CPUFrequency", "");
-        // bSys.append("CPUString", "");
 
         bSI.append(StringData("system"), bSys.obj());
         bSI.append(StringData("os"), bOS.obj());
