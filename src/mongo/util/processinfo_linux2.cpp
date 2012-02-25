@@ -284,14 +284,14 @@ namespace mongo {
                     // file exists but can't be opened
                     return;
 		// read up to 512 bytes
-		int len = f.len() > 512 ? : 512 : f.len();
+		int len = f.len() > 512 ? 512 : f.len();
                 f.read( 0, buf, len );
 		buf[ len ] = '\0';
                 name = buf;
 		size_t nl = 0;
-		if ( ( nl = string.find( '\n', nl ) ) != string::npos )
+		if ( ( nl = name.find( '\n', nl ) ) != string::npos )
 		    // stop at first newline
-		    string.erase( nl );
+		    name.erase( nl );
 
                 version = ""; // no standard format for name and version.  needs additional parsing.
             }
