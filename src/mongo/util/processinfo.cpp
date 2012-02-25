@@ -49,6 +49,6 @@ namespace mongo {
 
     // static _hostStats data
     BSONObj ProcessInfo::_hostStats;
-    mongo::mutex ProcessInfo::_statsMutex;
+    mongo::mutex ProcessInfo::_statsMutex("hostInfo");
 
 }

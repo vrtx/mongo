@@ -356,9 +356,12 @@ namespace mongo {
     }
 
     void ProcessInfo::getSystemInfo( BSONObjBuilder& info ) {
-        if (_hostStats.isEmpty())
-            // lazy load sysinfo
-            collectSystemInfo();
+        { 
+            scoped_lock lk(_statsMutex);
+            if (_hostStats.isEmpty())
+                // lazy load sysinfo
+                collectSystemInfo();
+        }
         info.append("os", _hostStats.getField("os").Obj());
         info.append("system", _hostStats.getField("system").Obj());
     }
