@@ -26,6 +26,7 @@
 #include "../db/pipeline/document_source.h"
 #include "../db/pipeline/expression_context.h"
 #include "../db/queryutil.h"
+#include "s/interrupt_status_mongos.h"
 #include "../scripting/engine.h"
 #include "../util/timer.h"
 
@@ -34,7 +35,6 @@
 #include "chunk.h"
 #include "strategy.h"
 #include "grid.h"
-#include "mr_shard.h"
 #include "client.h"
 
 namespace mongo {
@@ -1013,6 +1013,19 @@ namespace mongo {
                 return c;
             }
 
+            void cleanUp( const set<ServerAndQuery>& servers, string dbName, string shardResultCollection ) {
+                try {
+                    // drop collections with tmp results on each shard
+                    for ( set<ServerAndQuery>::iterator i=servers.begin(); i!=servers.end(); i++ ) {
+                        ScopedDbConnection conn( i->_server );
+                        conn->dropCollection( dbName + "." + shardResultCollection );
+                        conn.done();
+                    }
+                } catch ( std::exception e ) {
+                    log() << "Cannot cleanup shard results" << causedBy( e ) << endl;
+                }
+            }
+
             bool run(const string& dbName , BSONObj& cmdObj, int, string& errmsg, BSONObjBuilder& result, bool) {
                 return run( dbName, cmdObj, errmsg, result, 0 );
             }
@@ -1105,6 +1118,8 @@ namespace mongo {
                 BSONObjBuilder aggCountsB;
                 map<string,long long> countsMap;
                 set< BSONObj > splitPts;
+                BSONObj singleResult;
+                bool ok = true;
 
                 {
                     // take distributed lock to prevent split / migration
@@ -1143,12 +1158,17 @@ namespace mongo {
 
                     for ( map<Shard,BSONObj>::iterator i = results.begin(); i != results.end(); ++i ){
 
-                        BSONObj mrResult = i->second;
+                    	// need to gather list of all servers even if an error happened
                         string server = i->first.getConnString();
-
-                        BSONObj counts = mrResult["counts"].embeddedObjectUserCheck();
-                        shardCountsB.append( server , counts );
                         servers.insert( server );
+                        if ( !ok ) continue;
+
+                        singleResult = i->second;
+                        ok = singleResult["ok"].trueValue();
+                        if ( !ok ) continue;
+
+                        BSONObj counts = singleResult["counts"].embeddedObjectUserCheck();
+                        shardCountsB.append( server , counts );
 
                         // add up the counts for each shard
                         // some of them will be fixed later like output and reduce
@@ -1158,14 +1178,21 @@ namespace mongo {
                             countsMap[temp.fieldName()] += temp.numberLong();
                         }
 
-                        if (mrResult.hasField("splitKeys")) {
-                            BSONElement splitKeys = mrResult.getField("splitKeys");
+                        if (singleResult.hasField("splitKeys")) {
+                            BSONElement splitKeys = singleResult.getField("splitKeys");
                             vector<BSONElement> pts = splitKeys.Array();
                             for (vector<BSONElement>::iterator it = pts.begin(); it != pts.end(); ++it) {
                                 splitPts.insert(it->Obj().getOwned());
                             }
                         }
                     }
+                }
+
+                if ( ! ok ) {
+                    cleanUp( servers, dbName, shardResultCollection );
+                    errmsg = "MR parallel processing failed: ";
+                    errmsg += singleResult.toString();
+                    return 0;
                 }
 
                 // build the sharded finish command
@@ -1184,8 +1211,6 @@ namespace mongo {
                 finalCmd.append( "counts" , aggCounts );
 
                 Timer t2;
-                BSONObj singleResult;
-                bool ok = false;
                 long long reduceCount = 0;
                 long long outputCount = 0;
                 BSONObjBuilder postCountsB;
@@ -1258,6 +1283,8 @@ namespace mongo {
 
                             string server = i->first.getConnString();
                             singleResult = i->second;
+                            ok = singleResult["ok"].trueValue();
+                            if ( !ok ) break;
 
                             BSONObj counts = singleResult.getObjectField("counts");
                             reduceCount += counts.getIntField("reduce");
@@ -1295,19 +1322,10 @@ namespace mongo {
                     }
                 }
 
-                try {
-                    // drop collections with tmp results on each shard
-                    for ( set<ServerAndQuery>::iterator i=servers.begin(); i!=servers.end(); i++ ) {
-                        ScopedDbConnection conn( i->_server );
-                        conn->dropCollection( dbName + "." + shardResultCollection );
-                        conn.done();
-                    }
-                } catch ( std::exception e ) {
-                    log() << "Cannot cleanup shard results" << causedBy( e ) << endl;
-                }
+                cleanUp( servers, dbName, shardResultCollection );
 
                 if ( ! ok ) {
-                    errmsg = "final reduce failed: ";
+                    errmsg = "MR post processing failed: ";
                     errmsg += singleResult.toString();
                     return 0;
                 }
@@ -1393,13 +1411,13 @@ namespace mongo {
                                   BSONObjBuilder &result, bool fromRepl) {
             //const string shardedOutputCollection = getTmpName( collection );
 
-            intrusive_ptr<ExpressionContext> pCtx(
-                ExpressionContext::create());
-            pCtx->setInRouter(true);
+            intrusive_ptr<ExpressionContext> pExpCtx(
+                ExpressionContext::create(&InterruptStatusMongos::status));
+            pExpCtx->setInRouter(true);
 
             /* parse the pipeline specification */
             intrusive_ptr<Pipeline> pPipeline(
-                Pipeline::parseCommand(errmsg, cmdObj, pCtx));
+                Pipeline::parseCommand(errmsg, cmdObj, pExpCtx));
             if (!pPipeline.get())
                 return false; // there was some parsing error
 
@@ -1456,7 +1474,8 @@ namespace mongo {
                     
             /* wrap the list of futures with a source */
             intrusive_ptr<DocumentSourceCommandFutures> pSource(
-                DocumentSourceCommandFutures::create(errmsg, &futures));
+                DocumentSourceCommandFutures::create(
+                    errmsg, &futures, pExpCtx));
 
             /* run the pipeline */
             bool failed = pPipeline->run(result, errmsg, pSource);

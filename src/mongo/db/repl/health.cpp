@@ -259,6 +259,14 @@ namespace mongo {
         s << table(0, false);
         s << tr("Set name:", _name);
         s << tr("Majority up:", elect.aMajoritySeemsToBeUp()?"yes":"no" );
+
+        // lag
+        const Member *primary = box.getPrimary();
+        if (primary != 0 && primary != _self && !iAmArbiterOnly() && !lastOpTimeWritten.isNull()) {
+            int lag = primary->hbinfo().opTime.getSecs() - lastOpTimeWritten.getSecs();
+            s << tr("Lag: ", str::stream() << lag << " secs");
+        }
+
         s << _table();
 
         const char *h[] = {"Member",
@@ -268,7 +276,7 @@ namespace mongo {
                            "<a title=\"when this server last received a heartbeat response - includes error code responses\">Last heartbeat</a>",
                            "Votes", "Priority", "State", "Messages",
                            "<a title=\"how up to date this server is.  this value polled every few seconds so actually lag is typically much lower than value shown here.\">optime</a>",
-                           "<a title=\"Clock skew in seconds relative to this server. Informational; server clock variances will make the diagnostics hard to read, but otherwise are benign..\">skew</a>",
+                           "<a title=\"Not replication lag. Clock skew in seconds relative to this server. Informational; server clock variances will make the diagnostics hard to read, but otherwise are benign.\">clock skew</a>",
                            0
                           };
         s << table(h);
@@ -430,7 +438,9 @@ namespace mongo {
         b.appendTimeT("date", time(0));
         b.append("myState", myState.s);
         const Member *syncTarget = _currentSyncTarget;
-        if (syncTarget && myState != MemberState::RS_PRIMARY) {
+        if ( syncTarget && 
+            (myState != MemberState::RS_PRIMARY) && 
+            (myState != MemberState::RS_SHUNNED) ) {
             b.append("syncingTo", syncTarget->fullName());
         }
         b.append("members", v);

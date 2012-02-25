@@ -320,7 +320,7 @@ int _main(int argc, char* argv[]) {
     shardConnectionPool.addHook( new ShardingConnectionHook( true ) );
     shardConnectionPool.setName( "mongos shardconnection connectionpool" );
 
-    
+    // Mongos shouldn't lazily kill cursors, otherwise we can end up with extras from migration
     DBClientConnection::setLazyKillCursor( false );
 
     ReplicaSetMonitor::setConfigChangeHook( boost::bind( &ConfigServer::replicaSetChange , &configServer , _1 ) );
@@ -354,9 +354,8 @@ int _main(int argc, char* argv[]) {
             virtual string name() const { return "CheckConfigServers"; }
             virtual void doWork() { configServer.ok(true); }
         };
-        static CheckConfigServers checkConfigServers;
 
-        task::repeat(&checkConfigServers, 60*1000);
+        task::repeat(new CheckConfigServers, 60*1000);
     }
 
     int configError = configServer.checkConfigVersion( params.count( "upgrade" ) );
@@ -378,12 +377,6 @@ int _main(int argc, char* argv[]) {
 #endif
 
     boost::thread web( boost::bind(&webServerThread, new NoAdminAccess() /* takes ownership */) );
-
-    if ( scriptingEnabled ) {
-        ScriptEngine::setup();
-//        globalScriptEngine->setCheckInterruptCallback( jsInterruptCallback );
-//        globalScriptEngine->setGetInterruptSpecCallback( jsGetInterruptSpecCallback );
-    }
 
     MessageServer::Options opts;
     opts.port = cmdLine.port;

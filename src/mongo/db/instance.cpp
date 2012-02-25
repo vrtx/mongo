@@ -374,43 +374,44 @@ namespace mongo {
             dbresponse.responseTo = m.header()->id;
         }
         else {
-            const char *ns = m.singleData()->_data + 4;
-            char cl[256];
-            nsToDatabase(ns, cl);
-            if( ! c.getAuthenticationInfo()->isAuthorized(cl) ) {
-                uassert_nothrow("unauthorized");
-            }
-            else {
-                try {
-                    if ( op == dbInsert ) {
-                        receivedInsert(m, currentOp);
-                    }
-                    else if ( op == dbUpdate ) {
-                        receivedUpdate(m, currentOp);
-                    }
-                    else if ( op == dbDelete ) {
-                        receivedDelete(m, currentOp);
-                    }
-                    else if ( op == dbKillCursors ) {
-                        currentOp.ensureStarted();
-                        logThreshold = 10;
-                        receivedKillCursors(m);
-                    }
-                    else {
-                        mongo::log() << "    operation isn't supported: " << op << endl;
-                        currentOp.done();
-                        log = true;
-                    }
+            try {
+                // The following operations all require authorization.
+                // dbInsert, dbUpdate and dbDelete can be easily pre-authorized,
+                // here, but dbKillCursors cannot.
+                if ( op == dbKillCursors ) {
+                    currentOp.ensureStarted();
+                    logThreshold = 10;
+                    receivedKillCursors(m);
                 }
-                catch ( UserException& ue ) {
-                    tlog(3) << " Caught Assertion in " << opToString(op) << ", continuing " << ue.toString() << endl;
-                    debug.exceptionInfo = ue.getInfo();
+                else if ( ! c.getAuthenticationInfo()->isAuthorized(
+                                  nsToDatabase( m.singleData()->_data + 4 ) ) ) {
+                    uassert_nothrow("unauthorized");
                 }
-                catch ( AssertionException& e ) {
-                    tlog(3) << " Caught Assertion in " << opToString(op) << ", continuing " << e.toString() << endl;
-                    debug.exceptionInfo = e.getInfo();
+                else if ( op == dbInsert ) {
+                    receivedInsert(m, currentOp);
+                }
+                else if ( op == dbUpdate ) {
+                    receivedUpdate(m, currentOp);
+                }
+                else if ( op == dbDelete ) {
+                    receivedDelete(m, currentOp);
+                }
+                else {
+                    mongo::log() << "    operation isn't supported: " << op << endl;
+                    currentOp.done();
                     log = true;
                 }
+            }
+            catch ( UserException& ue ) {
+                tlog(3) << " Caught Assertion in " << opToString(op) << ", continuing "
+                        << ue.toString() << endl;
+                debug.exceptionInfo = ue.getInfo();
+            }
+            catch ( AssertionException& e ) {
+                tlog(3) << " Caught Assertion in " << opToString(op) << ", continuing "
+                        << e.toString() << endl;
+                debug.exceptionInfo = e.getInfo();
+                log = true;
             }
         }
         currentOp.ensureStarted();
@@ -610,10 +611,11 @@ namespace mongo {
         curop.debug().ntoreturn = ntoreturn;
         curop.debug().cursorid = cursorid;
 
+        shared_ptr<AssertionException> ex;
         time_t start = 0;
         int pass = 0;
         bool exhaust = false;
-        QueryResult* msgdata;
+        QueryResult* msgdata = 0;
         OpTime last;
         while( 1 ) {
             try {
@@ -624,14 +626,17 @@ namespace mongo {
                     else
                         last.waitForDifferent(1000/*ms*/);
                 }
+
+                // call this readlocked so state can't change
+                replVerifyReadsOk();
                 msgdata = processGetMore(ns, ntoreturn, cursorid, curop, pass, exhaust);
             }
             catch ( AssertionException& e ) {
-                exhaust = false;
-                curop.debug().exceptionInfo = e.getInfo();
-                msgdata = emptyMoreResult(cursorid);
+                ex.reset( new AssertionException( e.getInfo().msg, e.getCode() ) );
                 ok = false;
+                break;
             }
+
             if (msgdata == 0) {
                 exhaust = false;
                 massert(13073, "shutting down", !inShutdown() );
@@ -654,6 +659,27 @@ namespace mongo {
             }
             break;
         };
+
+        if (ex) {
+            exhaust = false;
+
+            BSONObjBuilder err;
+            ex->getInfo().append( err );
+            BSONObj errObj = err.done();
+
+            log() << errObj << endl;
+
+            curop.debug().exceptionInfo = ex->getInfo();
+
+            if (ex->getCode() == 13436) {
+                replyToQuery(ResultFlag_ErrSet, m, dbresponse, errObj);
+                curop.debug().responseLength = dbresponse.response->header()->dataLen();
+                curop.debug().nreturned = 1;
+                return ok;
+            }
+
+            msgdata = emptyMoreResult(cursorid);
+        }
 
         Message *resp = new Message();
         resp->setData(msgdata, true);

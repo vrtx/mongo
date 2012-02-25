@@ -29,6 +29,7 @@
 #include "config.h"
 #include "grid.h"
 #include "server.h"
+#include "pcrecpp.h"
 
 namespace mongo {
 
@@ -212,6 +213,48 @@ namespace mongo {
         return true;
     }
 
+    // Handles weird logic related to getting *either* a chunk manager *or* the collection primary shard
+    void DBConfig::getChunkManagerOrPrimary( const string& ns, ChunkManagerPtr& manager, ShardPtr& primary ){
+
+        // The logic here is basically that at any time, our collection can become sharded or unsharded
+        // via a command.  If we're not sharded, we want to send data to the primary, if sharded, we want
+        // to send data to the correct chunks, and we can't check both w/o the lock.
+
+        manager.reset();
+        primary.reset();
+
+        {
+            scoped_lock lk( _lock );
+
+            Collections::iterator i = _collections.find( ns );
+
+            // No namespace
+            if( i == _collections.end() ){
+                // If we don't know about this namespace, it's unsharded by default
+                primary.reset( new Shard( _primary ) );
+            }
+            else {
+                CollectionInfo& cInfo = i->second;
+
+                // TODO: we need to be careful about handling shardingEnabled, b/c in some places we seem to use and
+                // some we don't.  If we use this function in combination with just getChunkManager() on a slightly
+                // borked config db, we'll get lots of staleconfig retries
+                if( _shardingEnabled && cInfo.isSharded() ){
+                    manager = cInfo.getCM();
+                }
+                else{
+                    // Make a copy, we don't want to be tied to this config object
+                    primary.reset( new Shard( _primary ) );
+                }
+            }
+        }
+
+        assert( manager || primary );
+        assert( ! manager || ! primary );
+
+    }
+
+
     ChunkManagerPtr DBConfig::getChunkManagerIfExists( const string& ns, bool shouldReload, bool forceReload ){
         try{
             return getChunkManager( ns, shouldReload, forceReload );
@@ -238,7 +281,7 @@ namespace mongo {
                 _reload();
                 ci = _collections[ns];
             }
-            massert( 10181 ,  (string)"not sharded:" + ns , ci.isSharded() );
+            uassert( 10181 ,  (string)"not sharded:" + ns , ci.isSharded() );
             assert( ! ci.key().isEmpty() );
             
             if ( ! ( shouldReload || forceReload ) || earlyReload )
@@ -264,7 +307,7 @@ namespace mongo {
                 if ( v == oldVersion ) {
                     scoped_lock lk( _lock );
                     CollectionInfo& ci = _collections[ns];
-                    massert( 15885 , str::stream() << "not sharded after reloading from chunks : " << ns , ci.isSharded() );
+                    uassert( 15885 , str::stream() << "not sharded after reloading from chunks : " << ns , ci.isSharded() );
                     return ci.getCM();
                 }
             }
@@ -308,7 +351,7 @@ namespace mongo {
         scoped_lock lk( _lock );
         
         CollectionInfo& ci = _collections[ns];
-        massert( 14822 ,  (string)"state changed in the middle: " + ns , ci.isSharded() );
+        uassert( 14822 ,  (string)"state changed in the middle: " + ns , ci.isSharded() );
         
         bool forced = false;
         if ( temp->getVersion() > ci.getCM()->getVersion() ||
@@ -323,7 +366,7 @@ namespace mongo {
             ci.resetCM( temp.release() );
         }
         
-        massert( 15883 , str::stream() << "not sharded after chunk manager reset : " << ns , ci.isSharded() );
+        uassert( 15883 , str::stream() << "not sharded after chunk manager reset : " << ns , ci.isSharded() );
         return ci.getCM();
     }
 
@@ -372,9 +415,9 @@ namespace mongo {
         unserialize( o );
 
         BSONObjBuilder b;
-        b.appendRegex( "_id" , (string)"^" + _name + "\\." );
+        b.appendRegex( "_id" , (string)"^" + pcrecpp::RE::QuoteMeta( _name ) + "\\." );
 
-        auto_ptr<DBClientCursor> cursor = conn->query( ShardNS::collection ,b.obj() );
+        auto_ptr<DBClientCursor> cursor = conn->query( ShardNS::collection, b.obj() );
         assert( cursor.get() );
         while ( cursor->more() ) {
             BSONObj o = cursor->next();

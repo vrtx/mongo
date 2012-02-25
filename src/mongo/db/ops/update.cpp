@@ -284,7 +284,7 @@ namespace mongo {
         }
 
         case BIT: {
-            uassert( 10136 ,  "$bit needs an array" , elt.type() == Object );
+            uassert( 10136 ,  "$bit needs an object" , elt.type() == Object );
             uassert( 10137 ,  "$bit can only be applied to numbers" , in.isNumber() );
             uassert( 10138 ,  "$bit cannot update a value of type double" , in.type() != NumberDouble );
 
@@ -333,9 +333,7 @@ namespace mongo {
         }
 
         default:
-            stringstream ss;
-            ss << "Mod::apply can't handle type: " << op;
-            throw UserException( 9017, ss.str() );
+            uasserted( 9017 , str::stream() << "Mod::apply can't handle type: " << op );
         }
     }
 
@@ -604,24 +602,6 @@ namespace mongo {
         }
     }
 
-    void ModSet::extractFields( map< string, BSONElement > &fields, const BSONElement &top, const string &base ) {
-        if ( top.type() != Object ) {
-            fields[ base + top.fieldName() ] = top;
-            return;
-        }
-        BSONObjIterator i( top.embeddedObject() );
-        bool empty = true;
-        while( i.moreWithEOO() ) {
-            BSONElement e = i.next();
-            if ( e.eoo() )
-                break;
-            extractFields( fields, e, base + top.fieldName() + "." );
-            empty = false;
-        }
-        if ( empty )
-            fields[ base + top.fieldName() ] = top;
-    }
-
     template< class Builder >
     void ModSetState::_appendNewFromMods( const string& root , ModState& m , Builder& b , set<string>& onedownseen ) {
         const char * temp = m.fieldName();
@@ -643,6 +623,14 @@ namespace mongo {
 
     }
 
+    bool ModSetState::duplicateFieldName( const BSONElement &a, const BSONElement &b ) {
+        return
+        !a.eoo() &&
+        !b.eoo() &&
+        ( a.rawdata() != b.rawdata() ) &&
+        str::equals( a.fieldName(), b.fieldName() );
+    }
+
     template< class Builder >
     void ModSetState::createNewFromMods( const string& root , Builder& b , const BSONObj &obj ) {
         DEBUGUPDATE( "\t\t createNewFromMods root: " << root );
@@ -655,8 +643,18 @@ namespace mongo {
         ModStateHolder::iterator mend = _mods.lower_bound( buf.str() );
 
         set<string> onedownseen;
+        BSONElement prevE;
+        while ( !e.eoo() && m != mend ) {
 
-        while ( e.type() && m != mend ) {
+            if ( duplicateFieldName( prevE, e ) ) {
+                // Just copy through an element with a duplicate field name.
+                b.append( e );
+                prevE = e;
+                e = es.next();
+                continue;
+            }
+            prevE = e;
+
             string field = root + e.fieldName();
             FieldCompareResult cmp = compareDottedFieldNames( m->second.m->fieldName , field );
 
@@ -685,11 +683,8 @@ namespace mongo {
                     m++;
                 }
                 else {
-                    // this is a very weird case
-                    // have seen it in production, but can't reproduce
-                    // this assert prevents an inf. loop
-                    // but likely isn't the correct solution
-                    assert(0);
+                    massert( 16069 , "ModSet::createNewFromMods - "
+                            "SERVER-4777 unhandled duplicate field" , 0 );
                 }
                 continue;
             }
@@ -718,7 +713,7 @@ namespace mongo {
         }
 
         // finished looping the mods, just adding the rest of the elements
-        while ( e.type() ) {
+        while ( !e.eoo() ) {
             DEBUGUPDATE( "\t\t\t copying: " << e.fieldName() );
             b.append( e );  // if array, ignore field name
             e = es.next();
@@ -911,10 +906,19 @@ namespace mongo {
              - not mods is indexed
              - not upsert
     */
-    static UpdateResult _updateById(bool isOperatorUpdate, int idIdxNo, ModSet *mods, int profile, NamespaceDetails *d,
+    static UpdateResult _updateById(bool isOperatorUpdate, 
+                                    int idIdxNo, 
+                                    ModSet *mods, 
+                                    int profile, 
+                                    NamespaceDetails *d,
                                     NamespaceDetailsTransient *nsdt,
-                                    bool god, const char *ns,
-                                    const BSONObj& updateobj, BSONObj patternOrig, bool logop, OpDebug& debug) {
+                                    bool god, 
+                                    const char *ns,
+                                    const BSONObj& updateobj, 
+                                    BSONObj patternOrig, 
+                                    bool logop, 
+                                    OpDebug& debug, 
+                                    bool fromMigrate = false) {
 
         DiskLoc loc;
         {
@@ -982,7 +986,17 @@ namespace mongo {
         return UpdateResult( 1 , 0 , 1 );
     }
 
-    UpdateResult _updateObjects(bool god, const char *ns, const BSONObj& updateobj, BSONObj patternOrig, bool upsert, bool multi, bool logop , OpDebug& debug, RemoveSaver* rs ) {
+    UpdateResult _updateObjects( bool god, 
+                                 const char *ns, 
+                                 const BSONObj& updateobj, 
+                                 BSONObj patternOrig, 
+                                 bool upsert, 
+                                 bool multi, 
+                                 bool logop , 
+                                 OpDebug& debug, 
+                                 RemoveSaver* rs,
+                                 bool fromMigrate,
+                                 const QueryPlanSelectionPolicy &planPolicy ) {
         DEBUGUPDATE( "update: " << ns << " update: " << updateobj << " query: " << patternOrig << " upsert: " << upsert << " multi: " << multi );
         Client& client = cc();
         int profile = client.database()->profile;
@@ -1009,11 +1023,12 @@ namespace mongo {
             modsIsIndexed = mods->isIndexed();
         }
 
-        if( !multi && isSimpleIdQuery(patternOrig) && d && !modsIsIndexed ) {
+        if( planPolicy.permitOptimalIdPlan() && !multi && isSimpleIdQuery(patternOrig) && d &&
+           !modsIsIndexed ) {
             int idxNo = d->findIdIndex();
             if( idxNo >= 0 ) {
                 debug.idhack = true;
-                UpdateResult result = _updateById(isOperatorUpdate, idxNo, mods.get(), profile, d, nsdt, god, ns, updateobj, patternOrig, logop, debug);
+                UpdateResult result = _updateById(isOperatorUpdate, idxNo, mods.get(), profile, d, nsdt, god, ns, updateobj, patternOrig, logop, debug, fromMigrate);
                 if ( result.existing || ! upsert ) {
                     return result;
                 }
@@ -1030,7 +1045,8 @@ namespace mongo {
 
         int numModded = 0;
         debug.nscanned = 0;
-        shared_ptr< Cursor > c = NamespaceDetailsTransient::getCursor( ns, patternOrig );
+        shared_ptr<Cursor> c =
+        NamespaceDetailsTransient::getCursor( ns, patternOrig, BSONObj(), planPolicy );
         d = nsdetails(ns);
         nsdt = &NamespaceDetailsTransient::get(ns);
         bool autoDedup = c->autoDedup();
@@ -1273,13 +1289,24 @@ namespace mongo {
         return UpdateResult( 0 , isOperatorUpdate , 0 );
     }
 
-    UpdateResult updateObjects(const char *ns, const BSONObj& updateobj, BSONObj patternOrig, bool upsert, bool multi, bool logop , OpDebug& debug ) {
+    UpdateResult updateObjects( const char *ns, 
+                                const BSONObj& updateobj, 
+                                BSONObj patternOrig, 
+                                bool upsert, 
+                                bool multi, 
+                                bool logop , 
+                                OpDebug& debug, 
+                                bool fromMigrate,
+                                const QueryPlanSelectionPolicy &planPolicy ) {
         uassert( 10155 , "cannot update reserved $ collection", strchr(ns, '$') == 0 );
         if ( strstr(ns, ".system.") ) {
             /* dm: it's very important that system.indexes is never updated as IndexDetails has pointers into it */
             uassert( 10156 , str::stream() << "cannot update system collection: " << ns << " q: " << patternOrig << " u: " << updateobj , legalClientSystemNS( ns , true ) );
         }
-        return _updateObjects(false, ns, updateobj, patternOrig, upsert, multi, logop, debug);
+        UpdateResult ur = _updateObjects(false, ns, updateobj, patternOrig, upsert, multi, logop,
+                                         debug, 0, fromMigrate, planPolicy );
+        debug.nupdated = ur.num;
+        return ur;
     }
 
 }

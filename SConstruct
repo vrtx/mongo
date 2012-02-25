@@ -199,6 +199,7 @@ add_option( "gdbserver" , "build in gdb server support" , 0 , True )
 add_option( "heapcheck", "link to heap-checking malloc-lib and look for memory leaks during tests" , 0 , False )
 
 add_option("smokedbprefix", "prefix to dbpath et al. for smoke tests", 1 , False )
+add_option("smokeauth", "run smoke tests with --auth", 0 , False )
 
 for shortName in getThirdPartyShortNames():
     add_option( "use-system-" + shortName , "use system version of library " + shortName , 0 , True )
@@ -404,8 +405,8 @@ class InstallSetup:
         self.headers = True
         self.bannerFiles = [ "#distsrc/client/LICENSE.txt",
                              "#distsrc/client/SConstruct" ]
-        self.headerRoot = ""
-        self.clientTestsDir = "src/mongo/client/examples/"
+        self.headerRoot = "mongo/"
+        self.clientTestsDir = "#src/mongo/client/examples/"
 
 installSetup = InstallSetup()
 if distBuild:
@@ -448,8 +449,8 @@ def isDriverBuild():
 if has_option( "prefix" ):
     installDir = GetOption( "prefix" )
     if isDriverBuild():
+        installDir = '#' + installDir
         installSetup.justClient()
-
 
 def findVersion( root , choices ):
     if not isinstance(root, list):
@@ -701,13 +702,16 @@ if nix:
             env.Append( CPPFLAGS=" -fno-builtin-memcmp " ) # glibc's memcmp is faster than gcc's
 
     env.Append( CPPDEFINES="_FILE_OFFSET_BITS=64" )
-    env.Append( CXXFLAGS=" -Wnon-virtual-dtor " )
+    env.Append( CXXFLAGS=" -Wnon-virtual-dtor -Woverloaded-virtual" )
     env.Append( LINKFLAGS=" -fPIC -pthread -rdynamic" )
     env.Append( LIBS=[] )
 
     #make scons colorgcc friendly
     env['ENV']['HOME'] = os.environ['HOME']
-    env['ENV']['TERM'] = os.environ['TERM']
+    try:
+        env['ENV']['TERM'] = os.environ['TERM']
+    except KeyError:
+        pass
 
     if linux and has_option( "sharedclient" ):
         env.Append( LINKFLAGS=" -Wl,--as-needed -Wl,-zdefs " )

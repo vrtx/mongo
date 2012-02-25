@@ -457,7 +457,7 @@ namespace mongo {
          */
         long long State::postProcessCollection(CurOp* op, ProgressMeterHolder& pm) {
             if ( _onDisk == false || _config.outType == Config::INMEMORY )
-                return _temp->size();
+                return numInMemKeys();
 
             if (_config.outNonAtomic)
                 return postProcessCollectionNonAtomic(op, pm);
@@ -613,7 +613,7 @@ namespace mongo {
             _config.reducer->init( this );
             if ( _config.finalizer )
                 _config.finalizer->init( this );
-            _scope->setBoolean("_doFinal", _config.finalizer);
+            _scope->setBoolean("_doFinal", _config.finalizer.get() != 0);
 
             // by default start in JS mode, will be faster for small jobs
             _jsMode = _config.jsMode;

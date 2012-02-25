@@ -20,16 +20,21 @@
 
 #include "db/pipeline/field_path.h"
 #include "util/intrusive_counter.h"
+#include "util/iterator.h"
 
 
 namespace mongo {
+
     class BSONArrayBuilder;
     class BSONElement;
     class BSONObjBuilder;
     class Builder;
+    class DependencyTracker;
     class Document;
+    class DocumentSource;
     class ExpressionContext;
     class Value;
+
 
     class Expression :
         public IntrusiveCounterUnsigned {
@@ -50,6 +55,17 @@ namespace mongo {
           @returns the optimized Expression
          */
         virtual intrusive_ptr<Expression> optimize() = 0;
+
+        /**
+           Add this expression's field dependencies to the dependency tracker.
+
+           Expressions are trees, so this is often recursive.
+
+           @params pTracker the tracker to add the dependencies to
+         */
+        virtual void addDependencies(
+            const intrusive_ptr<DependencyTracker> &pTracker,
+            const DocumentSource *pSource) const = 0;
 
         /*
           Evaluate the Expression using the given document as input.
@@ -199,12 +215,15 @@ namespace mongo {
         };
 
         static int signum(int i);
+
+    protected:
+        typedef vector<intrusive_ptr<Expression> > ExpressionVector;
+
     };
 
 
     class ExpressionNary :
-        public Expression,
-        public boost::enable_shared_from_this<ExpressionNary> {
+        public Expression {
     public:
         // virtuals from Expression
         virtual intrusive_ptr<Expression> optimize();
@@ -212,6 +231,9 @@ namespace mongo {
             BSONObjBuilder *pBuilder, string fieldName, unsigned depth) const;
         virtual void addToBsonArray(
             BSONArrayBuilder *pBuilder, unsigned depth) const;
+        virtual void addDependencies(
+            const intrusive_ptr<DependencyTracker> &pTracker,
+            const DocumentSource *pSource) const;
 
         /*
           Add an operand to the n-ary expression.
@@ -250,7 +272,7 @@ namespace mongo {
     protected:
         ExpressionNary();
 
-        vector<intrusive_ptr<Expression> > vpOperand;
+        ExpressionVector vpOperand;
 
         /*
           Add the expression to the builder.
@@ -364,12 +386,14 @@ namespace mongo {
 
 
     class ExpressionCoerceToBool :
-        public Expression,
-        public boost::enable_shared_from_this<ExpressionCoerceToBool> {
+        public Expression {
     public:
         // virtuals from ExpressionNary
         virtual ~ExpressionCoerceToBool();
         virtual intrusive_ptr<Expression> optimize();
+        virtual void addDependencies(
+            const intrusive_ptr<DependencyTracker> &pTracker,
+            const DocumentSource *pSource) const;
         virtual intrusive_ptr<const Value> evaluate(
             const intrusive_ptr<Document> &pDocument) const;
         virtual void addToBsonObj(
@@ -440,12 +464,14 @@ namespace mongo {
 
 
     class ExpressionConstant :
-        public Expression,
-        public boost::enable_shared_from_this<ExpressionConstant> {
+        public Expression {
     public:
         // virtuals from Expression
         virtual ~ExpressionConstant();
         virtual intrusive_ptr<Expression> optimize();
+        virtual void addDependencies(
+            const intrusive_ptr<DependencyTracker> &pTracker,
+            const DocumentSource *pSource) const;
         virtual intrusive_ptr<const Value> evaluate(
             const intrusive_ptr<Document> &pDocument) const;
         virtual const char *getOpName() const;
@@ -543,12 +569,14 @@ namespace mongo {
 
 
     class ExpressionFieldPath :
-        public Expression,
-        public boost::enable_shared_from_this<ExpressionFieldPath> {
+        public Expression {
     public:
         // virtuals from Expression
         virtual ~ExpressionFieldPath();
         virtual intrusive_ptr<Expression> optimize();
+        virtual void addDependencies(
+            const intrusive_ptr<DependencyTracker> &pTracker,
+            const DocumentSource *pSource) const;
         virtual intrusive_ptr<const Value> evaluate(
             const intrusive_ptr<Document> &pDocument) const;
         virtual void addToBsonObj(
@@ -613,12 +641,14 @@ namespace mongo {
 
 
     class ExpressionFieldRange :
-        public Expression,
-        public boost::enable_shared_from_this<ExpressionFieldRange> {
+        public Expression {
     public:
         // virtuals from expression
         virtual ~ExpressionFieldRange();
         virtual intrusive_ptr<Expression> optimize();
+        virtual void addDependencies(
+            const intrusive_ptr<DependencyTracker> &pTracker,
+            const DocumentSource *pSource) const;
         virtual intrusive_ptr<const Value> evaluate(
             const intrusive_ptr<Document> &pDocument) const;
         virtual void addToBsonObj(
@@ -740,6 +770,61 @@ namespace mongo {
     };
 
 
+    class ExpressionIsoDate :
+        public ExpressionNary {
+    public:
+        // virtuals from ExpressionNary
+        virtual ~ExpressionIsoDate();
+        virtual intrusive_ptr<const Value> evaluate(
+            const intrusive_ptr<Document> &pDocument) const;
+        virtual const char *getOpName() const;
+        virtual void addOperand(const intrusive_ptr<Expression> &pExpression);
+
+        static intrusive_ptr<ExpressionNary> create();
+
+    private:
+        ExpressionIsoDate();
+
+        static const char argYear[];
+        static const char argMonth[];
+        static const char argDayOfMonth[];
+        static const char argHour[];
+        static const char argMinute[];
+        static const char argSecond[];
+
+        static const unsigned flagYear;
+        static const unsigned flagMonth;
+        static const unsigned flagDayOfMonth;
+        static const unsigned flagHour;
+        static const unsigned flagMinute;
+        static const unsigned flagSecond;
+        unsigned flag;
+
+        /**
+           Get a named long argument out of the given document.
+
+           @param pArgs the evaluated document with the named arguments in it
+           @param pName the name of the argument
+           @param defaultValue the value to return if the argument isn't found
+           @returns the value if found, otherwise zero
+           @throws uassert for non-whole numbers or non-numbers
+         */
+        int getIntArg(
+            const intrusive_ptr<Document> &pArgs,
+            const char *pName, int defaultValue) const;
+
+        /**
+           Check that the named argument fits in an integer.
+
+           @params pName the name of the argument
+           @params value the long value of the argument
+           @returns the integer value
+           @throws uassert if the value is out of range
+         */
+        int checkIntRange(const char *pName, long value) const;
+    };
+
+
     class ExpressionMinute :
         public ExpressionNary {
     public:
@@ -851,12 +936,14 @@ namespace mongo {
 
 
     class ExpressionObject :
-        public Expression,
-        public boost::enable_shared_from_this<ExpressionObject> {
+        public Expression {
     public:
         // virtuals from Expression
         virtual ~ExpressionObject();
         virtual intrusive_ptr<Expression> optimize();
+        virtual void addDependencies(
+            const intrusive_ptr<DependencyTracker> &pTracker,
+            const DocumentSource *pSource) const;
         virtual intrusive_ptr<const Value> evaluate(
             const intrusive_ptr<Document> &pDocument) const;
         virtual void addToBsonObj(
@@ -935,6 +1022,14 @@ namespace mongo {
          */
         void excludePath(const string &fieldPath);
 
+        /**
+           Get an iterator that can be used to iterate over all the result
+           field names in this ExpressionObject.
+
+           @returns the (intrusive_ptr'ed) iterator
+         */
+        Iterator<string> *getFieldIterator() const;
+
         /*
           Return the expression for a field.
 
@@ -967,6 +1062,35 @@ namespace mongo {
          */
         void documentToBson(BSONObjBuilder *pBuilder, unsigned depth) const;
 
+        /*
+          Visitor abstraction used by emitPaths().  Each path is recorded by
+          calling path().
+         */
+        class PathSink {
+        public:
+            virtual ~PathSink() {};
+
+            /**
+               Record a path.
+
+               @param path the dotted path string
+               @param include if true, the path is included; if false, the path
+                 is excluded
+             */
+            virtual void path(const string &path, bool include) = 0;
+        };
+
+        /**
+          Emit the field paths that have been included or excluded.  "Included"
+          includes paths that are referenced in expressions for computed
+          fields.
+
+          @param pSink where to write the paths to
+          @param pvPath pointer to a vector of strings describing the path on
+            descent; the top-level call should pass an empty vector
+         */
+        void emitPaths(PathSink *pPathSink) const;
+
     private:
         ExpressionObject();
 
@@ -981,16 +1105,43 @@ namespace mongo {
         vector<string> vFieldName;
         vector<intrusive_ptr<Expression> > vpExpression;
 
+
         /*
           Utility function used by documentToBson().  Emits inclusion
           and exclusion paths by recursively walking down the nested
           ExpressionObject trees these have created.
 
-          @param pBuilder the builder to write boolean valued path "fields" to
+          @param pSink where to write the paths to
           @param pvPath pointer to a vector of strings describing the path on
             descent; the top-level call should pass an empty vector
          */
-        void emitPaths(BSONObjBuilder *pBuilder, vector<string> *pvPath) const;
+        void emitPaths(PathSink *pPathSink, vector<string> *pvPath) const;
+
+        /*
+          Utility object for collecting emitPaths() results in a BSON
+          object.
+         */
+        class BuilderPathSink :
+            public PathSink {
+        public:
+            // virtuals from PathSink
+            virtual void path(const string &path, bool include);
+
+            /*
+              Create a PathSink that writes paths to a BSONObjBuilder,
+              to create an object in the form of { path:is_included,...}
+
+              This object uses a builder pointer that won't guarantee the
+              lifetime of the builder, so make sure it outlasts the use of
+              this for an emitPaths() call.
+
+              @param pBuilder to the builder to write paths to
+             */
+            BuilderPathSink(BSONObjBuilder *pBuilder);
+
+        private:
+            BSONObjBuilder *pBuilder;
+        };
 
         /* utility class used by emitPaths() */
         class PathPusher :
@@ -1208,6 +1359,11 @@ namespace mongo {
 
     inline size_t ExpressionObject::getFieldCount() const {
         return vFieldName.size();
+    }
+
+    inline ExpressionObject::BuilderPathSink::BuilderPathSink(
+        BSONObjBuilder *pB):
+        pBuilder(pB) {
     }
 
     inline ExpressionObject::PathPusher::PathPusher(

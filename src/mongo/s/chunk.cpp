@@ -109,6 +109,8 @@ namespace mongo {
     }
 
     BSONObj Chunk::_getExtremeKey( int sort ) const {
+        // We need to use a sharded connection here b/c there could be data left from stale migrations outside
+        // our chunk ranges.
         ShardConnection conn( getShard().getConnString() , _manager->getns() );
         Query q;
         if ( sort == 1 ) {
@@ -132,8 +134,17 @@ namespace mongo {
         }
 
         // find the extreme key
-        BSONObj end = conn->findOne( _manager->getns() , q );
-        conn.done();
+        BSONObj end;
+        try {
+            end = conn->findOne( _manager->getns() , q );
+            conn.done();
+        }
+        catch( StaleConfigException& ){
+            // We need to handle stale config exceptions if using sharded connections
+            // caught and reported above
+            conn.done();
+            throw;
+        }
 
         if ( end.isEmpty() )
             return BSONObj();
@@ -273,7 +284,7 @@ namespace mongo {
         cmd.append( "keyPattern" , _manager->getShardKey().key() );
         cmd.append( "min" , getMin() );
         cmd.append( "max" , getMax() );
-        cmd.append( "from" , getShard().getConnString() );
+        cmd.append( "from" , getShard().getName() );
         cmd.append( "splitKeys" , m );
         cmd.append( "shardId" , genID() );
         cmd.append( "configdb" , configServer.modelServer() );
@@ -309,8 +320,8 @@ namespace mongo {
 
         bool worked = fromconn->runCommand( "admin" ,
                                             BSON( "moveChunk" << _manager->getns() <<
-                                                    "from" << from.getConnString() <<
-                                                    "to" << to.getConnString() <<
+                                                    "from" << from.getName() <<
+                                                    "to" << to.getName() <<
                                                     "min" << _min <<
                                                     "max" << _max <<
                                                     "maxChunkSizeBytes" << chunkSize <<
@@ -375,17 +386,18 @@ namespace mongo {
                 _dataWritten = 0; // we're splitting, so should wait a bit
             }
 
-
+            bool shouldBalance = grid.shouldBalance( _manager->getns() );
 
             log() << "autosplitted " << _manager->getns() << " shard: " << toString()
                   << " on: " << splitPoint << " (splitThreshold " << splitThreshold << ")"
 #ifdef _DEBUG
                   << " size: " << getPhysicalSize() // slow - but can be useful when debugging
 #endif
-                  << ( res["shouldMigrate"].eoo() ? "" : " (migrate suggested)" ) << endl;
+                  << ( res["shouldMigrate"].eoo() ? "" : (string)" (migrate suggested" +
+                     ( shouldBalance ? ")" : ", but no migrations allowed)" ) ) << endl;
 
             BSONElement shouldMigrate = res["shouldMigrate"]; // not in mongod < 1.9.1 but that is ok
-            if (!shouldMigrate.eoo() && grid.shouldBalance()){
+            if ( ! shouldMigrate.eoo() && shouldBalance ){
                 BSONObj range = shouldMigrate.embeddedObject();
                 BSONObj min = range["min"].embeddedObject();
                 BSONObj max = range["max"].embeddedObject();
@@ -813,27 +825,28 @@ namespace mongo {
 
         do {
             boost::scoped_ptr<FieldRangeSetPair> frsp (org.topFrsp());
-            {
-                // special case if most-significant field isn't in query
-                FieldRange range = frsp->singleKeyRange(_key.key().firstElementFieldName());
-                bool nontrivial = !range.empty() && !range.universal();
-                if ( !nontrivial ) {
-                    DEV PRINT(nontrivial);
-                    getShardsForRange( shards, _key.globalMin(), _key.globalMax() );
-                    return;
-                }
+
+            // special case if most-significant field isn't in query
+            FieldRange range = frsp->shardKeyRange(_key.key().firstElementFieldName());
+            if ( range.universal() ) {
+                DEV PRINT(range.universal());
+                getShardsForRange( shards, _key.globalMin(), _key.globalMax() );
+                return;
             }
+            
+            if ( frsp->matchPossibleForShardKey( _key.key() ) ) {
+                BoundList ranges = frsp->shardKeyIndexBounds(_key.key());
+                for (BoundList::const_iterator it=ranges.begin(), end=ranges.end();
+                     it != end; ++it) {
 
-            BoundList ranges = frsp->singleKeyIndexBounds(_key.key(), 1);
-            for (BoundList::const_iterator it=ranges.begin(), end=ranges.end(); it != end; ++it) {
+                    BSONObj minObj = it->first.replaceFieldNames(_key.key());
+                    BSONObj maxObj = it->second.replaceFieldNames(_key.key());
 
-                BSONObj minObj = it->first.replaceFieldNames(_key.key());
-                BSONObj maxObj = it->second.replaceFieldNames(_key.key());
+                    getShardsForRange( shards, minObj, maxObj, false );
 
-                getShardsForRange( shards, minObj, maxObj, false );
-
-                // once we know we need to visit all shards no need to keep looping
-                if( shards.size() == _shards.size() ) return;
+                    // once we know we need to visit all shards no need to keep looping
+                    if( shards.size() == _shards.size() ) return;
+                }
             }
 
             if (!org.orRangesExhausted())
@@ -841,6 +854,14 @@ namespace mongo {
 
         }
         while (!org.orRangesExhausted());
+        
+        // SERVER-4914 Some clients of getShardsForQuery() assume at least one shard will be
+        // returned.  For now, we satisfy that assumption by adding a shard with no matches rather
+        // than return an empty set of shards.
+        if ( shards.empty() ) {
+            massert( 16068, "no chunk ranges available", !_chunkRanges.ranges().empty() );
+            shards.insert( _chunkRanges.ranges().begin()->second->getShard() );
+        }
     }
 
     void ChunkManager::getShardsForRange(set<Shard>& shards, const BSONObj& min, const BSONObj& max, bool fullKeyReq ) const {
@@ -1060,6 +1081,16 @@ namespace mongo {
         }
 
         return splitThreshold;
+    }
+    
+    /** This is for testing only, just setting up minimal basic defaults. */
+    ChunkManager::ChunkManager() :
+    _unique(),
+    _chunkRanges(),
+    _mutex( "ChunkManager" ),
+    _nsLock( ConnectionString(), "" ),
+    _sequenceNumber(),
+    _splitTickets( 0 ){
     }
 
     class ChunkObjUnitTest : public UnitTest {

@@ -657,19 +657,18 @@ namespace Plan {
                 client_->resetIndexCache();
                 client_->ensureIndex( ns_.c_str(), BSON( ( names + i ) << 1 ), false, names + i );
             }
-            lk_.reset( new dblock );
-            Client::Context ctx( ns_ );
+            _lk.reset( new dblock );
+            _ctx.reset( new Client::Context( ns_ ) );
             hint_ = BSON( "hint" << BSON( "a" << 1 ) );
-            hintElt_ = hint_.firstElement();
         }
         void run() {
             for( int i = 0; i < 10000; ++i )
-                MultiPlanScanner s( ns_.c_str(), BSONObj(), BSONObj(), &hintElt_ );
+                MultiPlanScanner s( ns_.c_str(), BSONObj(), BSONObj(), hint_ );
         }
         string ns_;
-        auto_ptr< dblock > lk_;
+        scoped_ptr<dblock> _lk;
+        scoped_ptr<Client::Context> _ctx;
         BSONObj hint_;
-        BSONElement hintElt_;
     };
 
     class Sort {
