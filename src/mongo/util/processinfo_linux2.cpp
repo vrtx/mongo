@@ -356,7 +356,7 @@ namespace mongo {
     }
 
     void ProcessInfo::getSystemInfo( BSONObjBuilder& info ) {
-        { 
+        {
             scoped_lock lk(_statsMutex);
             if (_hostStats.isEmpty())
                 // lazy load sysinfo

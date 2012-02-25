@@ -159,10 +159,9 @@ namespace mongo {
         bOS.append("name", "Mac OS X");
         bOS.append("version", getSysctlByName("kern.osrelease"));
         bOS.append("versionString", getSysctlByName("kern.version"));
-        bOS.append("bootTime", getSysctlByName("kern.boottime", sysctlValue_Int));
         bOS.append("alwaysFullSync", getSysctlByName("vfs.generic.always_do_fullfsync", sysctlValue_Int));
-        bOS.append("nFSAsync", getSysctlByName("vfs.generic.nfs.client.allow_async", sysctlValue_Int));
-
+        bOS.append("nfsAsync", getSysctlByName("vfs.generic.nfs.client.allow_async", sysctlValue_Int));
+        // bOS.append("bootTime", getSysctlByName("kern.boottime", sysctlValue_Int));
         bSys.append("architecture",  getSysctlByName("hw.machine"));
         bSys.append("model", getSysctlByName("hw.model"));
         bSys.append("memSize", getSysctlByName("hw.memsize", sysctlValue_Int));
@@ -170,8 +169,8 @@ namespace mongo {
         bSys.append("physicalCores", getSysctlByName("machdep.cpu.core_count", sysctlValue_Int));
         bSys.append("cpuFrequency", getSysctlByName("hw.cpufrequency", sysctlValue_Int));
         bSys.append("cpuString", getSysctlByName("machdep.cpu.brand_string"));
-        bSys.append("cpuFeatures", getSysctlByName("machdep.cpu.features"));
-        bSys.append("cpuExtraFeatures", getSysctlByName("machdep.cpu.extfeatures"));
+        // bSys.append("cpuFeatures", getSysctlByName("machdep.cpu.features"));
+        // bSys.append("cpuExtraFeatures", getSysctlByName("machdep.cpu.extfeatures"));
         bSys.append("pageSize", getSysctlByName("hw.pagesize", sysctlValue_Int));
         bSys.append("scheduler", getSysctlByName("kern.sched"));
         bSys.append("memBits",  ( sizeof(int*) == 4 ? 32 : 64 ) );
