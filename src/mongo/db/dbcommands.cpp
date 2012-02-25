@@ -646,8 +646,7 @@ namespace mongo {
         bool run(const string& dbname, BSONObj& cmdObj, int, string& errmsg, BSONObjBuilder& result, bool fromRepl) {
             ProcessInfo p;
             result.append( "host" , prettyHostName() );
-            result.append( "version", versionString );
-            result.appendDate( "localTime" , jsTime() );
+            result.appendDate( "hostTime" , jsTime() );
             p.getSystemInfo(result);
             return true;
         }
