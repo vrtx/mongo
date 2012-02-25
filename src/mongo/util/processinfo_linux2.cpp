@@ -247,17 +247,44 @@ namespace mongo {
                 }
                 catch (const std::out_of_range &e) {
                     // attempt to get invalid substr
+                    f.close();
                 }
+                f.close();
                 return; // return with lsb-relase data
             }
-            // // try redhat-release file
-            // if ( boost::filesystem::exists( "/etc/lsb-release" ) ) {
-            // f.open( "/etc/lsb-release", true );
-            // if ( ! f.is_open() || f.bad() )
-            //   return;
-            // f.read( 0, buf, f.len() > 4095 ? 4095 : f.len() );
-            // 
-            // // find the combined name and version string
+            // try known flat-text file locations
+            // format: Slackware-x86_64 13.0, Red Hat Enterprise Linux Server release 5.6 (Tikanga)
+            typedef vector <string> pathvec;
+            pathvec paths;
+            paths.push_back( "/etc/system-release" );
+            paths.push_back( "/etc/redhat-release" );
+            paths.push_back( "/etc/gentoo-release" );
+            paths.push_back( "/etc/novell-release" );
+            paths.push_back( "/etc/gentoo-release" );
+            paths.push_back( "/etc/SuSE-release" );
+            paths.push_back( "/etc/SUSE-release" );
+            paths.push_back( "/etc/sles-release" );
+            paths.push_back( "/etc/debian_release" );
+            paths.push_back( "/etc/slackware-version" );
+
+            paths.push_back( "" );  // blank entry is last
+            for ( pathvec::const_iterator i = paths.begin(); i != paths.end(); ++i )
+                // for each path
+                if ( boost::filesystem::exists( *i ) )
+                    // if the file exists, break
+                    break;
+
+            if ( *i != "" ) {
+                // found a file
+                f.open( i->c_str(), true );
+                if ( ! f.is_open() || f.bad() )
+                    // file exists but can't be opened
+                    return;
+                f.read( 0, buf, f.len() > 4095 ? 4095 : f.len() );
+                f.close();
+                name = buf;
+                version = ""; // no standard format for name and version.  could parse common distros
+            }
 
         }
 
