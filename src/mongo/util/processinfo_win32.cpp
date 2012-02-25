@@ -205,4 +205,9 @@ namespace mongo {
                 return true;
         return false;
     }
+
+    // static _hostStats data
+    BSONObj ProcessInfo::_hostStats;
+    mongo::mutex ProcessInfo::_statsMutex("hostInfo");
+
 }
