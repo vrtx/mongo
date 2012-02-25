@@ -219,9 +219,9 @@ namespace mongo {
         static void getLinuxDistro( string& name, string& version ) {
             char buf[4096] = { 0 };
 
-            // txsXSry lsb file first
+            // try lsb file first
             if ( boost::filesystem::exists( "/etc/lsb-release" ) ) {
-	        File f;
+                File f;
                 f.open( "/etc/lsb-release", true );
                 if ( ! f.is_open() || f.bad() )
                     return;
@@ -246,7 +246,7 @@ namespace mongo {
                     }
                 }
                 catch (const std::out_of_range &e) {
-                    // attempt to get invalid substr
+                    // attempted to get invalid substr
                 }
                 return; // return with lsb-relase data
             }
@@ -255,8 +255,8 @@ namespace mongo {
             // format: Slackware-x86_64 13.0, Red Hat Enterprise Linux Server release 5.6 (Tikanga), etc.
             typedef vector <string> pathvec;
             pathvec paths;
-	    pathvec::const_iterator i;
-	    bool found = false;
+            pathvec::const_iterator i;
+            bool found = false;
             paths.push_back( "/etc/system-release" );
             paths.push_back( "/etc/redhat-release" );
             paths.push_back( "/etc/gentoo-release" );
@@ -267,38 +267,44 @@ namespace mongo {
             paths.push_back( "/etc/sles-release" );
             paths.push_back( "/etc/debian_release" );
             paths.push_back( "/etc/slackware-version" );
-	    
-            for ( i = paths.begin(); i != paths.end(); ++i )
+        
+            for ( i = paths.begin(); i != paths.end(); ++i ) {
                 // for each path
-	        if ( boost::filesystem::exists( *i ) ) {
+                if ( boost::filesystem::exists( *i ) ) {
                     // if the file exists, break
-		    found = true;
+                    found = true;
                     break;
-	        }
+                }
+            }
 
             if ( found ) {
                 // found a file
-	        File f;
+                File f;
                 f.open( i->c_str(), true );
                 if ( ! f.is_open() || f.bad() )
                     // file exists but can't be opened
                     return;
-		// read up to 512 bytes
-                f.read( 0, buf, f.len() > 512 ? 512 : f.len() );
-		buf[ (f.len() > 512 ? 512 : f.len()) ] = '\0';
+
+                // read up to 512 bytes
+                int len = f.len() > 512 ? 512 : f.len();
+                f.read( 0, buf, len );
+                buf[ len ] = '\0';
                 name = buf;
+                size_t nl = 0;
+                if ( ( nl = name.find( '\n', nl ) ) != string::npos )
+                    // stop at first newline
+                    name.erase( nl );
                 version = ""; // no standard format for name and version.  needs additional parsing.
             }
-
         }
 
         /**
         * Get system memory total
         */
         static string getSystemMemorySize() {
-            string meminfo = readLineFromFile("/proc/meminfo");
+            string meminfo = readLineFromFile( "/proc/meminfo" );
             size_t lineOff= 0;
-            if ( !meminfo.empty() && (lineOff = meminfo.find("MemTotal")) != string::npos ) {
+            if ( !meminfo.empty() && ( lineOff = meminfo.find( "MemTotal" ) ) != string::npos ) {
                 // found MemTotal line.  capture everything between 'MemTotal:' and ' kB'.
                 lineOff = meminfo.substr( lineOff ).find( ':' ) + 1;
                 meminfo = meminfo.substr( lineOff, meminfo.substr( lineOff ).find( "kB" ) - 1);
