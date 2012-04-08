@@ -20,6 +20,8 @@
 #include "mmap.h"
 
 #include <iostream>
+#include <fstream>
+
 using namespace std;
 
 namespace mongo {
@@ -44,5 +46,8 @@ namespace mongo {
     void writePidFile( const string& path ) {
         pidFileWiper.write( path );
     }
+
+    // static lock for sysinfo initialization
+    mongo::mutex ProcessInfo::_sysInfoLock( "hostInfo" );
 
 }

@@ -19,17 +19,15 @@
 #pragma once
 
 #include "cursor.h"
-#include "jsobj.h"
 #include "queryutil.h"
 #include "matcher.h"
+#include "explain.h"
 #include "../util/net/listen.h"
-#include <queue>
 
 namespace mongo {
 
     class IndexDetails;
     class IndexType;
-    class ElapsedTracker;
 
     /** A plan for executing a query using the given index spec and FieldRangeSet. */
     class QueryPlan : boost::noncopyable {
@@ -43,15 +41,20 @@ namespace mongo {
                   const FieldRangeSetPair &frsp,
                   const FieldRangeSetPair *originalFrsp,
                   const BSONObj &originalQuery,
+                  const shared_ptr<Projection> &fields,
                   const BSONObj &order,
-                  bool mustAssertOnYieldFailure = true,
                   const BSONObj &startKey = BSONObj(),
                   const BSONObj &endKey = BSONObj(),
                   string special="" );
 
-        /** @return true iff no other plans should be considered. */
+        /** @return true iff this plan cannot return any documents. */
+        bool impossible() const { return _impossible; }
+        /**
+         * @return true iff this plan should run as the only candidate plan in the absence of an
+         * impossible plan.
+         */
         bool optimal() const { return _optimal; }
-        /* @return true iff this plan should not be considered at all. */
+        /** @return true iff this plan should not be considered at all. */
         bool unhelpful() const { return _unhelpful; }
         /** @return true iff ScanAndOrder processing will be required for result set. */
         bool scanAndOrderRequired() const { return _scanAndOrderRequired; }
@@ -74,25 +77,48 @@ namespace mongo {
 
         int direction() const { return _direction; }
         BSONObj indexKey() const;
-        bool indexed() const { return _index; }
+        bool indexed() const { return _index != 0; }
+        const IndexDetails *index() const { return _index; }
         int idxNo() const { return _idxNo; }
         const char *ns() const { return _frs.ns(); }
         NamespaceDetails *nsd() const { return _d; }
         BSONObj originalQuery() const { return _originalQuery; }
-        BSONObj simplifiedQuery( const BSONObj& fields = BSONObj() ) const { return _frs.simplifiedQuery( fields ); }
-        const FieldRange &range( const char *fieldName ) const { return _frs.range( fieldName ); }
         shared_ptr<FieldRangeVector> originalFrv() const { return _originalFrv; }
 
         const FieldRangeSet &multikeyFrs() const { return _frsMulti; }
         
-        bool mustAssertOnYieldFailure() const { return _mustAssertOnYieldFailure; }
+        shared_ptr<Projection::KeyOnly> keyFieldsOnly() const { return _keyFieldsOnly; }
         
+        /**
+         * A QueryPlan::Summary owns its own attributes and may be shared.  Currently a QueryPlan
+         * should only be owned by a QueryPlanSet.
+         */
+        struct Summary {
+            Summary() :
+            _scanAndOrderRequired() {
+            }
+            Summary( const QueryPlan &queryPlan ) :
+            _fieldRangeSetMulti( new FieldRangeSet( queryPlan._frsMulti ) ),
+            _keyFieldsOnly( queryPlan._keyFieldsOnly ),
+            _scanAndOrderRequired( queryPlan._scanAndOrderRequired ) {
+            }
+            bool valid() const { return _fieldRangeSetMulti; }
+            shared_ptr<FieldRangeSet> _fieldRangeSetMulti;
+            shared_ptr<Projection::KeyOnly> _keyFieldsOnly;
+            bool _scanAndOrderRequired;
+        };
+        Summary summary() const { return Summary( *this ); }
+
         /** The following member functions are just for testing. */
         
         shared_ptr<FieldRangeVector> frv() const { return _frv; }
         bool isMultiKey() const;
+        string toString() const;        
         
     private:
+        void checkTableScanAllowed() const;
+        void warnOnCappedIdTableScan() const;
+
         NamespaceDetails * _d;
         int _idxNo;
         const FieldRangeSet &_frs;
@@ -114,7 +140,7 @@ namespace mongo {
         string _special;
         IndexType * _type;
         bool _startOrEndSpec;
-        bool _mustAssertOnYieldFailure;
+        shared_ptr<Projection::KeyOnly> _keyFieldsOnly;
     };
 
     /**
@@ -152,9 +178,9 @@ namespace mongo {
          */
         virtual long long nscanned() = 0;
         /** Take any steps necessary before the db mutex is yielded. */
-        virtual bool prepareToYield() { massert( 13335, "yield not supported", false ); return false; }
+        virtual void prepareToYield() = 0;
         /** Recover once the db mutex is regained. */
-        virtual void recoverFromYield() { massert( 13336, "yield not supported", false ); }
+        virtual void recoverFromYield() = 0;
         
         /**
          * @return true iff the QueryPlan for this QueryOp may be registered
@@ -166,6 +192,7 @@ namespace mongo {
         bool complete() const { return _complete; }
         /** @return true iff the implementation called steStop(). */
         bool stopRequested() const { return _stopRequested; }
+        bool completeWithoutStop() const { return complete() && !stopRequested(); }
         /** @return true iff the implementation threw an exception. */
         bool error() const { return _error; }
         /** @return the exception thrown by implementation if one was thrown. */
@@ -174,7 +201,7 @@ namespace mongo {
         /** To be called by QueryPlanSet::Runner only. */
         
         QueryOp *createChild();
-        void setQueryPlan( const QueryPlan *qp ) { _qp = qp; assert( _qp != NULL ); }
+        void setQueryPlan( const QueryPlan *qp ) { _qp = qp; verify( _qp != NULL ); }
         void init();        
         void setException( const DBException &e ) {
             _error = true;
@@ -187,6 +214,11 @@ namespace mongo {
         shared_ptr<CoveredIndexMatcher> matcher( Cursor* c ) const {
             if( ! c ) return _matcher;
             return c->matcher() ? c->matcherPtr() : _matcher;
+        }
+
+        /** @return an ExplainPlanInfo object that will be updated as the query runs. */
+        virtual shared_ptr<ExplainPlanInfo> generateExplainInfo() {
+            return shared_ptr<ExplainPlanInfo>( new ExplainPlanInfo() );
         }
         
     protected:
@@ -203,8 +235,6 @@ namespace mongo {
 
         /** @return a copy of the inheriting class, which will be run with its own query plan. */
         virtual QueryOp *_createChild() const = 0;
-
-        virtual bool alwaysUseRecord() const { return false; }
 
     private:
         bool _complete;
@@ -245,15 +275,21 @@ namespace mongo {
     };
 
     /**
-     * A set of candidate query plans for a query.  This class can return a best buess plan or run a
+     * A set of candidate query plans for a query.  This class can return a best guess plan or run a
      * QueryOp on all the plans.
      */
     class QueryPlanSet {
     public:
-
         typedef boost::shared_ptr<QueryPlan> QueryPlanPtr;
         typedef vector<QueryPlanPtr> PlanSet;
 
+        /** Policies for utilizing recorded plans. */
+        typedef enum {
+            Ignore, // Ignore the recorded plan and try all candidate plans.
+            UseIfInOrder, // Use the recorded plan if it is properly ordered.
+            Use // Always use the recorded plan.
+        } RecordedPlanPolicy;
+        
         /**
          * @param originalFrsp - original constraints for this query clause; if null, frsp will be used.
          */
@@ -261,40 +297,16 @@ namespace mongo {
                       auto_ptr<FieldRangeSetPair> frsp,
                       auto_ptr<FieldRangeSetPair> originalFrsp,
                       const BSONObj &originalQuery,
+                      const shared_ptr<Projection> &fields,
                       const BSONObj &order,
-                      bool mustAssertOnYieldFailure = true,
-                      const BSONElement *hint = 0,
-                      bool honorRecordedPlan = true,
+                      const BSONObj &hint = BSONObj(),
+                      RecordedPlanPolicy recordedPlanPolicy = Use,
                       const BSONObj &min = BSONObj(),
-                      const BSONObj &max = BSONObj(),
-                      bool bestGuessOnly = false,
-                      bool mayYield = false);
+                      const BSONObj &max = BSONObj() );
 
         /** @return number of candidate plans. */
         int nPlans() const { return _plans.size(); }
 
-        /**
-         * Clone op for each query plan, and @return the first cloned op to call
-         * setComplete() or setStop().
-         */
-
-        shared_ptr<QueryOp> runOp( QueryOp &op );
-        template<class T>
-        shared_ptr<T> runOp( T &op ) {
-            return dynamic_pointer_cast<T>( runOp( static_cast<QueryOp&>( op ) ) );
-        }
-
-        /** Initialize or iterate a runner generated from @param originalOp. */
-        shared_ptr<QueryOp> nextOp( QueryOp &originalOp, bool retried = false );
-        
-        /** Yield the runner member. */
-        
-        bool prepareToYield();
-        void recoverFromYield();
-        
-        /** Clear the runner member. */
-        void clearRunner();
-        
         QueryPlanPtr firstPlan() const { return _plans[ 0 ]; }
         
         /** @return metadata about cursors and index bounds for all plans, suitable for explain output. */
@@ -304,54 +316,60 @@ namespace mongo {
         /** @return a single plan that may work well for the specified query. */
         QueryPlanPtr getBestGuess() const;
 
-        //for testing
         const FieldRangeSetPair &frsp() const { return *_frsp; }
+        BSONObj order() const { return _order; }
+        
+        /** @return true if an active plan is in order. */
+        bool haveInOrderPlan() const;
+        /** @return true if an active or fallback plan is in order. */
+        bool possibleInOrderPlan() const;
+        /** @return true if an active or fallback plan is out of order. */
+        bool possibleOutOfOrderPlan() const;
+
+        bool prepareToRetryQuery();
+        
+        string toString() const;
+        
+        //for testing
         const FieldRangeSetPair *originalFrsp() const { return _originalFrsp.get(); }
         bool modifiedKeys() const;
         bool hasMultiKey() const;
 
-    private:
-        void addOtherPlans( bool checkFirst );
-        void addPlan( QueryPlanPtr plan, bool checkFirst ) {
-            if ( checkFirst && plan->indexKey().woCompare( _plans[ 0 ]->indexKey() ) == 0 )
-                return;
-            _plans.push_back( plan );
-        }
-        void init();
-        void addHint( IndexDetails &id );
         class Runner {
         public:
             Runner( QueryPlanSet &plans, QueryOp &op );
-
-            /**
-             * Iterate interactively through candidate documents on all plans.
-             * QueryOp objects are returned at each interleaved step.
-             */
             
-            /** @return a plan that has completed, otherwise an arbitrary plan. */
-            shared_ptr<QueryOp> init();
             /**
-             * Move the Runner forward one iteration, and @return the plan for
-             * this iteration.
+             * Advance the runner, if it is not done().
+             * @return the next non error op if there is one, otherwise an error op.
+             * If the returned op is complete() or error(), the Runner becomes done().
              */
             shared_ptr<QueryOp> next();
-            /** @return next non error op if there is one, otherwise an error op. */
-            shared_ptr<QueryOp> nextNonError();
-
-            bool prepareToYield();
+            /** @return true if done iterating. */
+            bool done() const { return _done; }
+            
+            void prepareToYield();
             void recoverFromYield();
             
-            /** Run until first op completes. */
-            shared_ptr<QueryOp> runUntilFirstCompletes();
-             
-            void mayYield();
+            /** @return an ExplainClauseInfo object that will be updated as the query runs. */
+            shared_ptr<ExplainClauseInfo> generateExplainInfo() {
+                _explainClauseInfo.reset( new ExplainClauseInfo() );
+                return _explainClauseInfo;
+            }
+
+        private:
             QueryOp &_op;
             QueryPlanSet &_plans;
             static void initOp( QueryOp &op );
             static void nextOp( QueryOp &op );
-            static bool prepareToYieldOp( QueryOp &op );
+            static void prepareToYieldOp( QueryOp &op );
             static void recoverFromYieldOp( QueryOp &op );
-        private:
+            
+            /** Initialize the Runner. */
+            shared_ptr<QueryOp> init();
+            /** Move the Runner forward one iteration, and @return the plan for the iteration. */
+            shared_ptr<QueryOp> _next();
+
             vector<shared_ptr<QueryOp> > _ops;
             struct OpHolder {
                 OpHolder( const shared_ptr<QueryOp> &op ) : _op( op ), _offset() {}
@@ -362,27 +380,34 @@ namespace mongo {
                 }
             };
             our_priority_queue<OpHolder> _queue;
+            shared_ptr<ExplainClauseInfo> _explainClauseInfo;
+            bool _done;
         };
+
+    private:
+        void addOtherPlans( PlanSet &planSet );
+        void addFallbackPlans();
+        void addPlan( QueryPlanPtr plan, PlanSet &planSet );
+        void init();
+        void addHint( IndexDetails &id );
 
         const char *_ns;
         BSONObj _originalQuery;
+        shared_ptr<Projection> _fields;
         auto_ptr<FieldRangeSetPair> _frsp;
         auto_ptr<FieldRangeSetPair> _originalFrsp;
         PlanSet _plans;
+        PlanSet _fallbackPlans;
         bool _mayRecordPlan;
         bool _usingCachedPlan;
         BSONObj _hint;
         BSONObj _order;
         long long _oldNScanned;
-        bool _honorRecordedPlan;
+        RecordedPlanPolicy _recordedPlanPolicy;
         BSONObj _min;
         BSONObj _max;
         string _special;
-        bool _bestGuessOnly;
-        bool _mayYield;
         ElapsedTracker _yieldSometimesTracker;
-        shared_ptr<Runner> _runner;
-        bool _mustAssertOnYieldFailure;
     };
 
     /** Handles $or type queries by generating a QueryPlanSet for each $or clause. */
@@ -390,56 +415,57 @@ namespace mongo {
     public:
         MultiPlanScanner( const char *ns,
                           const BSONObj &query,
+                          const shared_ptr<Projection> &fields,
                           const BSONObj &order,
-                          const BSONElement *hint = 0,
-                          bool honorRecordedPlan = true,
+                          const BSONObj &hint = BSONObj(),
+                          QueryPlanSet::RecordedPlanPolicy recordedPlanPolicy = QueryPlanSet::Use,
                           const BSONObj &min = BSONObj(),
-                          const BSONObj &max = BSONObj(),
-                          bool bestGuessOnly = false,
-                          bool mayYield = false);
+                          const BSONObj &max = BSONObj() );
 
-        /**
-         * Clone op for each query plan of a single $or clause, and @return the first cloned op
-         * to call setComplete() or setStop().
-         */
-
-        shared_ptr<QueryOp> runOpOnce( QueryOp &op );
-        template<class T>
-        shared_ptr<T> runOpOnce( T &op ) {
-            return dynamic_pointer_cast<T>( runOpOnce( static_cast<QueryOp&>( op ) ) );
-        }
-
-        /**
-         * For each $or clause, calls runOpOnce on the child QueryOp cloned from the winning QueryOp
-         * of the previous $or clause (or from the supplied 'op' for the first $or clause).
-         */
-
-        shared_ptr<QueryOp> runOp( QueryOp &op );
-        template<class T>
-        shared_ptr<T> runOp( T &op ) {
-            return dynamic_pointer_cast<T>( runOp( static_cast<QueryOp&>( op ) ) );
-        }
-
-        /** Initialize or iterate a runner generated from @param originalOp. */
-        
+        /** Set the initial QueryOp for QueryPlanSet iteration. */
         void initialOp( const shared_ptr<QueryOp> &originalOp ) { _baseOp = originalOp; }
+        /**
+         * Advance to the next QueryOp, if not doneOps().
+         * @return the next non error op if there is one, otherwise an error op.
+         * If the returned op is complete() or error(), the MultiPlanScanner becomes doneOps() and
+         * no further QueryOp iteration is possible.
+         */
         shared_ptr<QueryOp> nextOp();
+        /** @return true if done with QueryOp iteration. */
+        bool doneOps() const { return _doneOps; }
+
+        /**
+         * Advance to the next $or clause; mayRunMore() must be true.
+         * @param currentPlan QueryPlan of the current $or clause
+         * @return best guess query plan of the next $or clause, 0 if there is no such plan.
+         */
+        const QueryPlan *nextClauseBestGuessPlan( const QueryPlan &currentPlan );
+
+        /** Add explain information for a new clause. */
+        void addClauseInfo( const shared_ptr<ExplainClauseInfo> &clauseInfo ) {
+            verify( _explainQueryInfo );
+            _explainQueryInfo->addClauseInfo( clauseInfo );
+        }
+        
+        /** @return an ExplainQueryInfo object that will be updated as the query runs. */
+        shared_ptr<ExplainQueryInfo> generateExplainInfo() {
+            _explainQueryInfo.reset( new ExplainQueryInfo() );
+            return _explainQueryInfo;
+        }
         
         /** Yield the runner member. */
         
-        bool prepareToYield();
+        void prepareToYield();
         void recoverFromYield();
         
         /** Clear the runner member. */
         void clearRunner();
         
+        void setRecordedPlanPolicy( QueryPlanSet::RecordedPlanPolicy recordedPlanPolicy ) {
+            _recordedPlanPolicy = recordedPlanPolicy;
+        }
+        
         int currentNPlans() const;
-
-        /**
-         * @return a single simple cursor if the scanner would run a single cursor
-         * for this query, otherwise return an empty shared_ptr.
-         */
-        shared_ptr<Cursor> singleCursor() const;
 
         /**
          * @return the query plan that would be used if the scanner would run a single
@@ -447,93 +473,106 @@ namespace mongo {
          * MultiPlanScanner is destroyed, hence we return a raw pointer.
          */
         const QueryPlan *singlePlan() const;
-
+        
         /** @return true iff more $or clauses need to be scanned. */
-        bool mayRunMore() const { return _or ? ( !_tableScanned && !_org->orFinished() ) : _i == 0; }
+        bool mayRunMore() const {
+            return _or ? ( !_tableScanned && !_org->orRangesExhausted() ) : _i == 0;
+        }
         /** @return non-$or version of explain output. */
         BSONObj oldExplain() const { assertNotOr(); return _currentQps->explain(); }
         /** @return true iff this is not a $or query and a plan is selected based on previous success of this plan. */
         bool usingCachedPlan() const { return !_or && _currentQps->usingCachedPlan(); }
-        /** Don't attempt to scan multiple plans, just use the best guess. */
-        void setBestGuessOnly() { _bestGuessOnly = true; }
-        /** Yielding is allowed while running each QueryPlan. */
-        void mayYield( bool val ) { _mayYield = val; }
-        bool modifiedKeys() const { return _currentQps->modifiedKeys(); }
         bool hasMultiKey() const { return _currentQps->hasMultiKey(); }
+        
+        /** Clear recorded indexes for the current QueryPlanSet's patterns. */
+        void clearIndexesForPatterns() const;
+
+        /** @return true if an active plan of _currentQps is in order. */
+        bool haveInOrderPlan() const;
+        /** @return true if an active or fallback plan of _currentQps is in order. */
+        bool possibleInOrderPlan() const;
+        /** @return true if an active or fallback plan of _currentQps is out of order. */
+        bool possibleOutOfOrderPlan() const;
+        
+        int i() const { return _i; }
+        
+        string toString() const;
 
     private:
+        /** Initialize or iterate a runner generated from @param originalOp. */
+        shared_ptr<QueryOp> iterateRunner( QueryOp &originalOp, bool retried = false );
+
+        shared_ptr<QueryOp> nextOpSimple();
+        shared_ptr<QueryOp> nextOpOr();
+        
+        void updateCurrentQps( QueryPlanSet *qps );
+        
         void assertNotOr() const {
             massert( 13266, "not implemented for $or query", !_or );
         }
         void assertMayRunMore() const {
             massert( 13271, "can't run more ops", mayRunMore() );
         }
+        
+        void handleEndOfClause( const QueryPlan &clausePlan );
+        void handleBeginningOfClause();
+
         shared_ptr<QueryOp> nextOpBeginningClause();
-        shared_ptr<QueryOp> nextOpHandleEndOfClause();
-        bool uselessOr( const BSONElement &hint ) const;
-        const char * _ns;
+
+        bool haveUselessOr() const;
+
+        const string _ns;
         bool _or;
         BSONObj _query;
+        shared_ptr<Projection> _fields;
         shared_ptr<OrRangeGenerator> _org; // May be null in certain non $or query cases.
         auto_ptr<QueryPlanSet> _currentQps;
         int _i;
-        bool _honorRecordedPlan;
-        bool _bestGuessOnly;
+        QueryPlanSet::RecordedPlanPolicy _recordedPlanPolicy;
         BSONObj _hint;
-        bool _mayYield;
         bool _tableScanned;
         shared_ptr<QueryOp> _baseOp;
+        shared_ptr<QueryPlanSet::Runner> _runner;
+        shared_ptr<ExplainQueryInfo> _explainQueryInfo;
+        bool _doneOps;
     };
 
-    /** Provides a cursor interface for certain limited uses of a MultiPlanScanner. */
+    /**
+     * Provides a cursor interface for serial single Cursor iteration using a MultiPlanScanner.
+     * Currently used internally by a QueryOptimizerCursor.
+     *
+     * A MultiCursor is backed by one BasicCursor or BtreeCursor at a time and forwards calls for
+     * ensuring a consistent state after a write to its backing Cursor.  There is a known issue in
+     * some cases when advance() causes a switch to a new BasicCursor backing (SERVER-5198).
+     */
     class MultiCursor : public Cursor {
     public:
-        class CursorOp : public QueryOp {
-        public:
-            CursorOp() {}
-            CursorOp( const QueryOp &other ) : QueryOp( other ) {}
-            virtual shared_ptr<Cursor> newCursor() const = 0;
-        };
-        /** takes ownership of 'op' */
-        MultiCursor( const char *ns, const BSONObj &pattern, const BSONObj &order, shared_ptr<CursorOp> op = shared_ptr<CursorOp>(), bool mayYield = false );
-        /**
-         * Used
-         * 1. To handoff a query to a getMore()
-         * 2. To handoff a QueryOptimizerCursor
-         * @param nscanned is an optional initial value, if not supplied nscanned()
-         * will always return -1
-         */
-        MultiCursor( auto_ptr<MultiPlanScanner> mps, const shared_ptr<Cursor> &c, const shared_ptr<CoveredIndexMatcher> &matcher, const QueryOp &op, long long nscanned = -1 );
+        /** @param nscanned is the initial nscanned value. */
+        MultiCursor( auto_ptr<MultiPlanScanner> mps, const shared_ptr<Cursor> &c,
+                    const shared_ptr<CoveredIndexMatcher> &matcher,
+                    const shared_ptr<ExplainPlanInfo> &explainPlanInfo,
+                    const QueryOp &op, long long nscanned );
 
         virtual bool ok() { return _c->ok(); }
         virtual Record* _current() { return _c->_current(); }
         virtual BSONObj current() { return _c->current(); }
         virtual DiskLoc currLoc() { return _c->currLoc(); }
-        virtual bool advance() {
-            _c->advance();
-            while( !ok() && _mps->mayRunMore() ) {
-                nextClause();
-            }
-            return ok();
-        }
+        virtual bool advance();
         virtual BSONObj currKey() const { return _c->currKey(); }
         virtual DiskLoc refLoc() { return _c->refLoc(); }
         virtual void noteLocation() { _c->noteLocation(); }
         virtual void checkLocation() { _c->checkLocation(); }
+        virtual void recoverFromYield();
         virtual bool supportGetMore() { return true; }
-        virtual bool supportYields() { return _c->supportYields(); }
+        virtual bool supportYields() { return true; }
         virtual BSONObj indexKeyPattern() { return _c->indexKeyPattern(); }
 
-        /**
-         * with update we could potentially get the same document on multiple
-         * indexes, but update appears to already handle this with seenObjects
-         * so we don't have to do anything special here.
-         */
+        /** Deduping documents from a prior cursor is handled by the matcher. */
         virtual bool getsetdup(DiskLoc loc) { return _c->getsetdup( loc ); }
 
         virtual bool autoDedup() const { return _c->autoDedup(); }
 
-        virtual bool modifiedKeys() const { return _mps->modifiedKeys(); }
+        virtual bool modifiedKeys() const { return true; }
 
         virtual bool isMultiKey() const { return _mps->hasMultiKey(); }
 
@@ -541,43 +580,34 @@ namespace mongo {
         virtual CoveredIndexMatcher* matcher() const { return _matcher.get(); }
 
         virtual bool capped() const { return _c->capped(); }
-
-        /** return -1 if we're a getmore handoff */
-        virtual long long nscanned() { return _nscanned >= 0 ? _nscanned + _c->nscanned() : _nscanned; }
-        /** just for testing */
-        shared_ptr<Cursor> sub_c() const { return _c; }
+        
+        virtual long long nscanned() { return _nscanned + _c->nscanned(); }
+        
+        void noteIterate( bool match, bool loadedRecord );
+        
+        void noteYield();
+        
+        const QueryPlan &queryPlan() const {
+            verify( _c->ok() && _queryPlan );
+            return *_queryPlan;
+        }
+        
+        const Projection::KeyOnly *keyFieldsOnly() const {
+            verify( _c->ok() && _queryPlan );
+            return _queryPlan->keyFieldsOnly().get();
+        }
     private:
-        class NoOp : public CursorOp {
-        public:
-            NoOp() {}
-            NoOp( const QueryOp &other ) : CursorOp( other ) {}
-            virtual void _init() { setComplete(); }
-            virtual void next() {}
-            virtual bool mayRecordPlan() const { return false; }
-            virtual QueryOp *_createChild() const { return new NoOp(); }
-            virtual shared_ptr<Cursor> newCursor() const { return qp().newCursor(); }
-            virtual long long nscanned() { assert( false ); return 0; }
-        };
         void nextClause();
-        shared_ptr<CursorOp> _op;
-        shared_ptr<Cursor> _c;
         auto_ptr<MultiPlanScanner> _mps;
+        shared_ptr<Cursor> _c;
         shared_ptr<CoveredIndexMatcher> _matcher;
+        const QueryPlan *_queryPlan;
         long long _nscanned;
+        shared_ptr<ExplainPlanInfo> _explainPlanInfo;
     };
 
     /** NOTE min, max, and keyPattern will be updated to be consistent with the selected index. */
     IndexDetails *indexDetailsForRange( const char *ns, string &errmsg, BSONObj &min, BSONObj &max, BSONObj &keyPattern );
-
-    bool isSimpleIdQuery( const BSONObj& query );
-
-    /**
-     * @return a single cursor that may work well for the given query.
-     * It is possible no cursor is returned if the sort is not supported by an index.  Clients are responsible
-     * for checking this if they are not sure an index for a sort exists, and defaulting to a non-sort if
-     * no suitable indices exist.
-     */
-    shared_ptr<Cursor> bestGuessCursor( const char *ns, const BSONObj &query, const BSONObj &sort );
 
     /**
      * Add-on functionality for queryutil classes requiring access to indexing

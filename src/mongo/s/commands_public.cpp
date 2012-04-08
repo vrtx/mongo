@@ -26,6 +26,7 @@
 #include "../db/pipeline/document_source.h"
 #include "../db/pipeline/expression_context.h"
 #include "../db/queryutil.h"
+#include "s/interrupt_status_mongos.h"
 #include "../scripting/engine.h"
 #include "../util/timer.h"
 
@@ -34,7 +35,6 @@
 #include "chunk.h"
 #include "strategy.h"
 #include "grid.h"
-#include "mr_shard.h"
 #include "client.h"
 
 namespace mongo {
@@ -87,7 +87,7 @@ namespace mongo {
                 bool ok = conn->runCommand( db , cmdObj , res , passOptions() ? options : 0 );
                 if ( ! ok && res["code"].numberInt() == SendStaleConfigCode ) {
                     conn.done();
-                    throw RecvStaleConfigException( res["ns"].toString(),"command failed because of stale config");
+                    throw RecvStaleConfigException( "command failed because of stale config", res );
                 }
                 result.appendElements( res );
                 conn.done();
@@ -461,7 +461,7 @@ namespace mongo {
 
                     set<Shard> shards;
                     cm->getShardsForQuery( shards , filter );
-                    assert( shards.size() );
+                    verify( shards.size() );
 
                     hadToBreak = false;
 
@@ -683,7 +683,7 @@ namespace mongo {
                 conn.done();
 
                 if (!ok && res.getIntField("code") == RecvStaleConfigCode) { // code for RecvStaleConfigException
-                    throw RecvStaleConfigException(fullns, "FindAndModify"); // Command code traps this and re-runs
+                    throw RecvStaleConfigException( "FindAndModify", res ); // Command code traps this and re-runs
                 }
 
                 result.appendElements(res);
@@ -765,6 +765,25 @@ namespace mongo {
             }
 
         } groupCmd;
+
+        class SplitVectorCmd : public NotAllowedOnShardedCollectionCmd  {
+        public:
+            SplitVectorCmd() : NotAllowedOnShardedCollectionCmd("splitVector") {}
+            virtual bool passOptions() const { return true; }
+            virtual bool run(const string& dbName , BSONObj& cmdObj, int options, string& errmsg, BSONObjBuilder& result, bool) {
+                string x = cmdObj.firstElement().valuestrsafe();
+                if ( ! str::startsWith( x , dbName ) ) {
+                    errmsg = str::stream() << "doing a splitVector across dbs isn't supported via mongos";
+                    return false;
+                }
+                return NotAllowedOnShardedCollectionCmd::run( dbName , cmdObj , options , errmsg, result, false );
+            }
+            virtual string getFullNS( const string& dbName , const BSONObj& cmdObj ) {
+                return cmdObj.firstElement().valuestrsafe();
+            }
+
+        } splitVectorCmd;
+
 
         class DistinctCmd : public PublicGridCommand {
         public:
@@ -994,6 +1013,7 @@ namespace mongo {
                     }
                 }
                 b.append( "out" , output );
+                b.append( "shardedFirstPass" , true );
 
                 if ( maxChunkSizeBytes > 0 ) {
                     // will need to figure out chunks, ask shards for points
@@ -1010,6 +1030,19 @@ namespace mongo {
                 LOG(4) << "  server:" << c->getShard().toString() << " " << o << endl;
                 s->insert( c->getShard() , ns , o , flags, safe);
                 return c;
+            }
+
+            void cleanUp( const set<ServerAndQuery>& servers, string dbName, string shardResultCollection ) {
+                try {
+                    // drop collections with tmp results on each shard
+                    for ( set<ServerAndQuery>::iterator i=servers.begin(); i!=servers.end(); i++ ) {
+                        ScopedDbConnection conn( i->_server );
+                        conn->dropCollection( dbName + "." + shardResultCollection );
+                        conn.done();
+                    }
+                } catch ( std::exception e ) {
+                    log() << "Cannot cleanup shard results" << causedBy( e ) << endl;
+                }
             }
 
             bool run(const string& dbName , BSONObj& cmdObj, int, string& errmsg, BSONObjBuilder& result, bool) {
@@ -1077,7 +1110,7 @@ namespace mongo {
 
                 // modify command to run on shards with output to tmp collection
                 string badShardedField;
-                assert( maxChunkSizeBytes < 0x7fffffff );
+                verify( maxChunkSizeBytes < 0x7fffffff );
                 BSONObj shardedCommand = fixForShards( cmdObj , shardResultCollection , badShardedField, static_cast<int>(maxChunkSizeBytes) );
 
                 if ( ! shardedInput && ! shardedOutput && ! customOutDB ) {
@@ -1104,12 +1137,16 @@ namespace mongo {
                 BSONObjBuilder aggCountsB;
                 map<string,long long> countsMap;
                 set< BSONObj > splitPts;
+                BSONObj singleResult;
+                bool ok = true;
 
                 {
                     // take distributed lock to prevent split / migration
+                    /*
                     ConnectionString config = configServer.getConnectionString();
                     DistributedLock lockSetup( config , fullns );
                     dist_lock_try dlk;
+
 
                     if (shardedInput) {
                         try{
@@ -1128,6 +1165,7 @@ namespace mongo {
                             return false;
                         }
                     }
+                    */
 
                     try {
                         SHARDED->commandOp( dbName, shardedCommand, 0, fullns, q, results );
@@ -1139,12 +1177,17 @@ namespace mongo {
 
                     for ( map<Shard,BSONObj>::iterator i = results.begin(); i != results.end(); ++i ){
 
-                        BSONObj mrResult = i->second;
+                    	// need to gather list of all servers even if an error happened
                         string server = i->first.getConnString();
-
-                        BSONObj counts = mrResult["counts"].embeddedObjectUserCheck();
-                        shardCountsB.append( server , counts );
                         servers.insert( server );
+                        if ( !ok ) continue;
+
+                        singleResult = i->second;
+                        ok = singleResult["ok"].trueValue();
+                        if ( !ok ) continue;
+
+                        BSONObj counts = singleResult["counts"].embeddedObjectUserCheck();
+                        shardCountsB.append( server , counts );
 
                         // add up the counts for each shard
                         // some of them will be fixed later like output and reduce
@@ -1154,14 +1197,21 @@ namespace mongo {
                             countsMap[temp.fieldName()] += temp.numberLong();
                         }
 
-                        if (mrResult.hasField("splitKeys")) {
-                            BSONElement splitKeys = mrResult.getField("splitKeys");
+                        if (singleResult.hasField("splitKeys")) {
+                            BSONElement splitKeys = singleResult.getField("splitKeys");
                             vector<BSONElement> pts = splitKeys.Array();
                             for (vector<BSONElement>::iterator it = pts.begin(); it != pts.end(); ++it) {
                                 splitPts.insert(it->Obj().getOwned());
                             }
                         }
                     }
+                }
+
+                if ( ! ok ) {
+                    cleanUp( servers, dbName, shardResultCollection );
+                    errmsg = "MR parallel processing failed: ";
+                    errmsg += singleResult.toString();
+                    return 0;
                 }
 
                 // build the sharded finish command
@@ -1180,8 +1230,6 @@ namespace mongo {
                 finalCmd.append( "counts" , aggCounts );
 
                 Timer t2;
-                BSONObj singleResult;
-                bool ok = false;
                 long long reduceCount = 0;
                 long long outputCount = 0;
                 BSONObjBuilder postCountsB;
@@ -1254,6 +1302,8 @@ namespace mongo {
 
                             string server = i->first.getConnString();
                             singleResult = i->second;
+                            ok = singleResult["ok"].trueValue();
+                            if ( !ok ) break;
 
                             BSONObj counts = singleResult.getObjectField("counts");
                             reduceCount += counts.getIntField("reduce");
@@ -1267,7 +1317,7 @@ namespace mongo {
                                 for (unsigned int i = 0; i < sizes.size(); i += 2) {
                                     BSONObj key = sizes[i].Obj().getOwned();
                                     long long size = sizes[i+1].numberLong();
-                                    assert( size < 0x7fffffff );
+                                    verify( size < 0x7fffffff );
                                     chunkSizes[key] = static_cast<int>(size);
                                 }
                             }
@@ -1279,7 +1329,7 @@ namespace mongo {
                     for ( map<BSONObj, int>::iterator it = chunkSizes.begin() ; it != chunkSizes.end() ; ++it ) {
                         BSONObj key = it->first;
                         int size = it->second;
-                        assert( size < 0x7fffffff );
+                        verify( size < 0x7fffffff );
 
                         // key reported should be the chunk's minimum
                         ChunkPtr c =  cm->findChunk(key);
@@ -1291,19 +1341,10 @@ namespace mongo {
                     }
                 }
 
-                try {
-                    // drop collections with tmp results on each shard
-                    for ( set<ServerAndQuery>::iterator i=servers.begin(); i!=servers.end(); i++ ) {
-                        ScopedDbConnection conn( i->_server );
-                        conn->dropCollection( dbName + "." + shardResultCollection );
-                        conn.done();
-                    }
-                } catch ( std::exception e ) {
-                    log() << "Cannot cleanup shard results" << causedBy( e ) << endl;
-                }
+                cleanUp( servers, dbName, shardResultCollection );
 
                 if ( ! ok ) {
-                    errmsg = "final reduce failed: ";
+                    errmsg = "MR post processing failed: ";
                     errmsg += singleResult.toString();
                     return 0;
                 }
@@ -1357,130 +1398,134 @@ namespace mongo {
         } compactCmd;
 
 
-	/*
-	  Note these are in the pub_grid_cmds namespace, so they don't
-	  conflict with those in db/commands/pipeline_command.cpp.
-	 */
-	class PipelineCommand :
-	    public PublicGridCommand {
-	public:
-	    PipelineCommand();
+        /*
+          Note these are in the pub_grid_cmds namespace, so they don't
+          conflict with those in db/commands/pipeline_command.cpp.
+         */
+        class PipelineCommand :
+            public PublicGridCommand {
+        public:
+            PipelineCommand();
 
-	    // virtuals from Command
-	    virtual bool run(const string &dbName , BSONObj &cmdObj,
-			     int options, string &errmsg,
-			     BSONObjBuilder &result, bool fromRepl);
+            // virtuals from Command
+            virtual bool run(const string &dbName , BSONObj &cmdObj,
+                             int options, string &errmsg,
+                             BSONObjBuilder &result, bool fromRepl);
 
-	private:
-	    
-	};
+        private:
+            
+        };
 
 
-	/* -------------------- PipelineCommand ----------------------------- */
+        /* -------------------- PipelineCommand ----------------------------- */
 
-	static const PipelineCommand pipelineCommand;
+        static const PipelineCommand pipelineCommand;
 
-	PipelineCommand::PipelineCommand():
-	    PublicGridCommand(Pipeline::commandName) {
-	}
+        PipelineCommand::PipelineCommand():
+            PublicGridCommand(Pipeline::commandName) {
+        }
 
-	bool PipelineCommand::run(const string &dbName , BSONObj &cmdObj,
-				  int options, string &errmsg,
-				  BSONObjBuilder &result, bool fromRepl) {
-	    //const string shardedOutputCollection = getTmpName( collection );
+        bool PipelineCommand::run(const string &dbName , BSONObj &cmdObj,
+                                  int options, string &errmsg,
+                                  BSONObjBuilder &result, bool fromRepl) {
+            //const string shardedOutputCollection = getTmpName( collection );
 
-	    intrusive_ptr<ExpressionContext> pCtx(
-		ExpressionContext::create());
-	    pCtx->setInRouter(true);
+            intrusive_ptr<ExpressionContext> pExpCtx(
+                ExpressionContext::create(&InterruptStatusMongos::status));
+            pExpCtx->setInRouter(true);
 
-	    /* parse the pipeline specification */
-	    boost::shared_ptr<Pipeline> pPipeline(
-		Pipeline::parseCommand(errmsg, cmdObj, pCtx));
-	    if (!pPipeline.get())
-		return false; // there was some parsing error
+            /* parse the pipeline specification */
+            intrusive_ptr<Pipeline> pPipeline(
+                Pipeline::parseCommand(errmsg, cmdObj, pExpCtx));
+            if (!pPipeline.get())
+                return false; // there was some parsing error
 
-	    string fullns(dbName + "." + pPipeline->getCollectionName());
+            string fullns(dbName + "." + pPipeline->getCollectionName());
 
-	    /*
-	      If the system isn't running sharded, or the target collection
-	      isn't sharded, pass this on to a mongod.
-	    */
-	    DBConfigPtr conf(grid.getDBConfig(dbName , false));
-	    if (!conf || !conf->isShardingEnabled() || !conf->isSharded(fullns))
-		return passthrough(conf, cmdObj, result);
+            /*
+              If the system isn't running sharded, or the target collection
+              isn't sharded, pass this on to a mongod.
+            */
+            DBConfigPtr conf(grid.getDBConfig(dbName , false));
+            if (!conf || !conf->isShardingEnabled() || !conf->isSharded(fullns))
+                return passthrough(conf, cmdObj, result);
 
-	    /* split the pipeline into pieces for mongods and this mongos */
-	    boost::shared_ptr<Pipeline> pShardPipeline(
-		pPipeline->splitForSharded());
+            /* split the pipeline into pieces for mongods and this mongos */
+            intrusive_ptr<Pipeline> pShardPipeline(
+                pPipeline->splitForSharded());
 
-	    /* create the command for the shards */
-	    BSONObjBuilder commandBuilder;
-	    pShardPipeline->toBson(&commandBuilder);
-	    BSONObj shardedCommand(commandBuilder.done());
+            /* create the command for the shards */
+            BSONObjBuilder commandBuilder;
+            pShardPipeline->toBson(&commandBuilder);
+            BSONObj shardedCommand(commandBuilder.done());
 
-	    BSONObjBuilder shardQueryBuilder;
-	    BSONObjBuilder shardSortBuilder;
-	    pShardPipeline->getCursorMods(
-		&shardQueryBuilder, &shardSortBuilder);
-	    BSONObj shardQuery(shardQueryBuilder.done());
-	    BSONObj shardSort(shardSortBuilder.done());
+            BSONObjBuilder shardQueryBuilder;
+#ifdef NEVER
+            BSONObjBuilder shardSortBuilder;
+            pShardPipeline->getCursorMods(
+                &shardQueryBuilder, &shardSortBuilder);
+            BSONObj shardSort(shardSortBuilder.done());
+#endif /* NEVER */
+            pShardPipeline->getInitialQuery(&shardQueryBuilder);
+            BSONObj shardQuery(shardQueryBuilder.done());
 
-	    ChunkManagerPtr cm(conf->getChunkManager(fullns));
-	    set<Shard> shards;
-	    cm->getShardsForQuery(shards, shardQuery);
+            ChunkManagerPtr cm(conf->getChunkManager(fullns));
+            set<Shard> shards;
+            cm->getShardsForQuery(shards, shardQuery);
 
-	    /*
-	      From MRCmd::Run: "we need to use our connections to the shard
-	      so filtering is done correctly for un-owned docs so we allocate
-	      them in our thread and hand off"
-	    */
-	    vector<boost::shared_ptr<ShardConnection> > shardConns;
-	    list<boost::shared_ptr<Future::CommandResult> > futures;
-	    for (set<Shard>::iterator i=shards.begin(), end=shards.end();
-		 i != end; i++) {
-		boost::shared_ptr<ShardConnection> temp(
-		    new ShardConnection(i->getConnString(), fullns));
-		assert(temp->get());
-		futures.push_back(
-		    Future::spawnCommand(i->getConnString(), dbName,
-					 shardedCommand , 0, temp->get()));
-		shardConns.push_back(temp);
-	    }
+            /*
+              From MRCmd::Run: "we need to use our connections to the shard
+              so filtering is done correctly for un-owned docs so we allocate
+              them in our thread and hand off"
+            */
+            vector<boost::shared_ptr<ShardConnection> > shardConns;
+            list<boost::shared_ptr<Future::CommandResult> > futures;
+            for (set<Shard>::iterator i=shards.begin(), end=shards.end();
+                 i != end; i++) {
+                boost::shared_ptr<ShardConnection> temp(
+                    new ShardConnection(i->getConnString(), fullns));
+                verify(temp->get());
+                futures.push_back(
+                    Future::spawnCommand(i->getConnString(), dbName,
+                                         shardedCommand , 0, temp->get()));
+                shardConns.push_back(temp);
+            }
                     
-	    /* wrap the list of futures with a source */
-	    intrusive_ptr<DocumentSourceCommandFutures> pSource(
-		DocumentSourceCommandFutures::create(errmsg, &futures));
+            /* wrap the list of futures with a source */
+            intrusive_ptr<DocumentSourceCommandFutures> pSource(
+                DocumentSourceCommandFutures::create(
+                    errmsg, &futures, pExpCtx));
 
-	    /* run the pipeline */
-	    bool failed = pPipeline->run(result, errmsg, pSource);
+            /* run the pipeline */
+            bool failed = pPipeline->run(result, errmsg, pSource);
 
 /*
-	    BSONObjBuilder shardresults;
-	    for (list<boost::shared_ptr<Future::CommandResult> >::iterator i(
-		     futures.begin()); i!=futures.end(); ++i) {
-		boost::shared_ptr<Future::CommandResult> res(*i);
-		if (!res->join()) {
-		    error() << "sharded pipeline failed on shard: " <<
-			res->getServer() << " error: " << res->result() << endl;
-		    result.append( "cause" , res->result() );
-		    errmsg = "mongod pipeline failed: ";
-		    errmsg += res->result().toString();
-		    failed = true;
-		    continue;
-		}
+            BSONObjBuilder shardresults;
+            for (list<boost::shared_ptr<Future::CommandResult> >::iterator i(
+                     futures.begin()); i!=futures.end(); ++i) {
+                boost::shared_ptr<Future::CommandResult> res(*i);
+                if (!res->join()) {
+                    error() << "sharded pipeline failed on shard: " <<
+                        res->getServer() << " error: " << res->result() << endl;
+                    result.append( "cause" , res->result() );
+                    errmsg = "mongod pipeline failed: ";
+                    errmsg += res->result().toString();
+                    failed = true;
+                    continue;
+                }
 
-		shardresults.append( res->getServer() , res->result() );
-	    }
+                shardresults.append( res->getServer() , res->result() );
+            }
 */
 
-	    for(unsigned i = 0; i < shardConns.size(); ++i)
-		shardConns[i]->done();
+            for(unsigned i = 0; i < shardConns.size(); ++i)
+                shardConns[i]->done();
 
-	    if (failed && (errmsg.length() > 0))
-		return false;
+            if (failed && (errmsg.length() > 0))
+                return false;
 
-	    return true;
-	}
+            return true;
+        }
 
     } // namespace pub_grid_cmds
 
@@ -1510,7 +1555,7 @@ namespace mongo {
                 errmsg = "unauthorized";
                 anObjBuilder.append( "note" , str::stream() << "need to authorized on db: " << cl << " for command: " << e.fieldName() );
             }
-            else if( c->adminOnly() && c->localHostOnlyIfNoAuth( jsobj ) && noauth && !ai->isLocalHost ) {
+            else if( c->adminOnly() && c->localHostOnlyIfNoAuth( jsobj ) && noauth && !ai->isLocalHost() ) {
                 ok = false;
                 errmsg = "unauthorized: this command must run from localhost when running db without auth";
                 log() << "command denied: " << jsobj.toString() << endl;

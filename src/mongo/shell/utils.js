@@ -66,6 +66,10 @@ assert = function( b , msg ){
     doassert( msg == undefined ? "assert failed" : "assert failed : " + msg );
 }
 
+// the mongo code uses verify
+// so this is to be nice to mongo devs
+verify = assert;
+
 assert.automsg = function( b ) {
     assert( eval( b ), b );
 }
@@ -100,7 +104,7 @@ assert.contains = function( o, arr, msg ){
     var wasIn = false
     
     if( ! arr.length ){
-        for( i in arr ){
+        for( var i in arr ){
             wasIn = arr[i] == o || ( ( arr[i] != null && o != null ) && friendlyEqual( arr[i] , o ) )
                 return;
             if( wasIn ) break
@@ -228,7 +232,7 @@ assert.isnull = function( what , msg ){
     if ( what == null )
         return;
     
-    doassert( "supposed to null (" + ( msg || "" ) + ") was: " + tojson( what ) );
+    doassert( "supposed to be null (" + ( msg || "" ) + ") was: " + tojson( what ) );
 }
 
 assert.lt = function( a , b , msg ){
@@ -341,7 +345,7 @@ String.prototype.startsWith = function (str){
 }
 
 String.prototype.endsWith = function (str){
-    return new RegExp( str + "$" ).test( this )
+    return new RegExp( RegExp.escape(str) + "$" ).test( this )
 }
 
 Number.prototype.zeroPad = function(width) {
@@ -425,6 +429,10 @@ ISODate = function(isoDateStr){
     }
 
     return new Date(time);
+}
+
+RegExp.escape = function( text ){
+    return text.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, "\\$&");
 }
 
 RegExp.prototype.tojson = RegExp.prototype.toString;
@@ -543,7 +551,7 @@ compareOn = function(field){
 
 Object.keySet = function( o ) {
     var ret = new Array();
-    for( i in o ) {
+    for( var i in o ) {
         if ( !( i in o.__proto__ && o[ i ] === o.__proto__[ i ] ) ) {
             ret.push( i );
         }
@@ -691,7 +699,7 @@ else {
 }
 
 if ( typeof _threadInject != "undefined" ){
-    print( "fork() available!" );
+    //print( "fork() available!" );
     
     Thread = function(){
         this.init.apply( this, arguments );
@@ -711,9 +719,10 @@ if ( typeof _threadInject != "undefined" ){
     }    
 
     // Helper class to generate a list of events which may be executed by a ParallelTester
-    EventGenerator = function( me, collectionName, mean ) {
+    EventGenerator = function( me, collectionName, mean, host ) {
         this.mean = mean;
-        this.events = new Array( me, collectionName );
+        if (host == undefined) host = db.getMongo().host;
+        this.events = new Array( me, collectionName, host );
     }
     
     EventGenerator.prototype._add = function( action ) {
@@ -754,7 +763,8 @@ if ( typeof _threadInject != "undefined" ){
         var args = argumentsToArray( arguments );
         var me = args.shift();
         var collectionName = args.shift();
-        var m = new Mongo( db.getMongo().host );
+        var host = args.shift();
+        var m = new Mongo( host );
         var t = m.getDB( "test" )[ collectionName ];
         for( var i in args ) {
             sleep( args[ i ][ 0 ] );
@@ -816,7 +826,8 @@ if ( typeof _threadInject != "undefined" ){
                                    "jstests/drop2.js",
                                    "jstests/dropdb_race.js",
                                    "jstests/fsync2.js", // May be placed in serialTestsArr once SERVER-4243 is fixed.
-                                   "jstests/bench_test1.js"] );
+                                   "jstests/bench_test1.js",
+                                   "jstests/padding.js"] );
         
         // some tests can't be run in parallel with each other
         var serialTestsArr = [ "jstests/fsync.js"
@@ -1304,7 +1315,7 @@ shellAutocomplete = function ( /*prefix*/ ) { // outer scope function called on 
         }
 
         var ret = [];
-        for ( i in noDuplicates )
+        for ( var i in noDuplicates )
             ret.push( i );
 
         return ret;

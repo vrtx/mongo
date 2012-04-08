@@ -26,7 +26,6 @@
 
 #include "dbtests.h"
 #include "../db/oplog.h"
-#include "../db/queryoptimizer.h"
 
 #include "../db/repl/rs.h"
 
@@ -52,7 +51,7 @@ namespace ReplSetTests {
         DBDirectClient *client() const { return &client_; }
 
         static void insert( const BSONObj &o, bool god = false ) {
-            dblock lk;
+            Lock::DBWrite lk(ns());
             Client::Context ctx( ns() );
             theDataFileMgr.insert( ns(), o.objdata(), o.objsize(), god );
         }
@@ -95,8 +94,13 @@ namespace ReplSetTests {
         void run() {
             writelock lk("");
 
-            OpTime o1 = OpTime::now();
-            OpTime o2 = OpTime::now();
+            OpTime o1,o2;
+
+            {
+                mongo::mutex::scoped_lock lk2(OpTime::m);
+                o1 = OpTime::now(lk2);
+                o2 = OpTime::now(lk2);
+            }
 
             BSONObjBuilder b;
             b.appendTimestamp("ts", o2.asLL());
@@ -141,8 +145,8 @@ namespace ReplSetTests {
         void run() {
             writelock lk("");
 
-            OpTime o1 = OpTime::now();
-            OpTime o2 = OpTime::now();
+            OpTime o1 = OpTime::_now();
+            OpTime o2 = OpTime::_now();
 
             BSONObjBuilder b;
             b.appendTimestamp("ts", o2.asLL());
@@ -160,55 +164,145 @@ namespace ReplSetTests {
             sync.applyOp(obj, o1);
 
             BSONObj fin = findOne();
-            assert(fin["x"].Number() == 456);
+            verify(fin["x"].Number() == 456);
         }
     };
 
     class CappedInitialSync : public Base {
         string _ns;
-        dblock lk;
-        Client::Context _context;
+        writelock _lk;
 
         string spec() const {
             return "{\"capped\":true,\"size\":512}";
         }
 
         void create() {
-            dblock lk;
+            Client::Context c(_ns);
             string err;
             ASSERT(userCreateNS( _ns.c_str(), fromjson( spec() ), err, false ));
         }
 
         void drop() {
-            string s( _ns );
-            string errmsg;
-            BSONObjBuilder result;
-            dropCollection( s, errmsg, result );
-        }
-    public:
-        CappedInitialSync() : _ns("unittests.foo.bar"), _context(_ns) {
+            Client::Context c(_ns);
             if (nsdetails(_ns.c_str()) != NULL) {
-                drop();
+                string errmsg;
+                BSONObjBuilder result;
+                dropCollection( string(_ns), errmsg, result );
             }
         }
-        ~CappedInitialSync() {
-            if ( nsdetails(_ns.c_str()) == NULL )
-                return;
-            drop();
-        }
 
-        void run() {
-            create();
-
+        BSONObj updateFail() {
             BSONObjBuilder b;
-            b.appendTimestamp("ts", OpTime::now().asLL());
+            {
+                mongo::mutex::scoped_lock lk2(OpTime::m);
+                b.appendTimestamp("ts", OpTime::now(lk2).asLL());
+            }
             b.append("op", "u");
             b.append("o", BSON("$set" << BSON("x" << 456)));
             b.append("o2", BSON("_id" << 123 << "x" << 123));
             b.append("ns", _ns);
+            BSONObj o = b.obj();
 
+            verify(!apply(o));
+            return o;
+        }
+    public:
+        CappedInitialSync() : _ns("unittests.foo.bar"), _lk(_ns) {
+            drop();
+            create();
+        }
+        virtual ~CappedInitialSync() {
+            drop();
+        }
+
+        string& cappedNs() {
+            return _ns;
+        }
+
+        // returns true on success, false on failure
+        bool apply(const BSONObj& op) {
+            Client::Context ctx( _ns );
             // in an annoying twist of api, returns true on failure
-            assert(applyOperation_inlock(b.obj(), true));
+            return !applyOperation_inlock(op, true);
+        }
+
+        void run() {
+            Lock::DBWrite lk(_ns);
+
+            BSONObj op = updateFail();
+
+            Sync s("");
+            verify(!s.shouldRetry(op));
+        }
+    };
+
+    // check that applying ops doesn't cause _id index to be created
+
+    class CappedUpdate : public CappedInitialSync {
+        void updateSucceed() {
+            BSONObjBuilder b;
+            {
+                mongo::mutex::scoped_lock lk2(OpTime::m);
+                b.appendTimestamp("ts", OpTime::now(lk2).asLL());
+            }
+            b.append("op", "u");
+            b.append("o", BSON("$set" << BSON("x" << 789)));
+            b.append("o2", BSON("x" << 456));
+            b.append("ns", cappedNs());
+
+            verify(apply(b.obj()));
+        }
+
+        void insert() {
+            Client::Context ctx( cappedNs() );
+            BSONObj o = BSON("x" << 456);
+            DiskLoc loc = theDataFileMgr.insert( cappedNs().c_str(), o.objdata(), o.objsize(), false );
+            verify(!loc.isNull());
+        }
+    public:
+        virtual ~CappedUpdate() {}
+        void run() {
+            // RARELY shoud be once/128x
+            for (int i=0; i<150; i++) {
+                insert();
+                updateSucceed();
+            }
+
+            DBDirectClient client;
+            int count = (int) client.count(cappedNs(), BSONObj());
+            verify(count > 1);
+
+            // Just to be sure, no _id index, right?
+            Client::Context ctx(cappedNs());
+            NamespaceDetails *nsd = nsdetails(cappedNs().c_str());
+            verify(nsd->findIdIndex() == -1);
+        }
+    };
+
+    class CappedInsert : public CappedInitialSync {
+        void insertSucceed() {
+            BSONObjBuilder b;
+            {
+                mongo::mutex::scoped_lock lk2(OpTime::m);
+                b.appendTimestamp("ts", OpTime::now(lk2).asLL());
+            }
+            b.append("op", "i");
+            b.append("o", BSON("_id" << 123 << "x" << 456));
+            b.append("ns", cappedNs());
+            verify(apply(b.obj()));
+        }
+    public:
+        virtual ~CappedInsert() {}
+        void run() {
+            // This will succeed, but not insert anything because they are changed to upserts
+            for (int i=0; i<150; i++) {
+                insertSucceed();
+            }
+
+            // Just to be sure, no _id index, right?
+            Client::Context ctx(cappedNs());
+            NamespaceDetails *nsd = nsdetails(cappedNs().c_str());
+            verify(nsd->findIdIndex() == -1);
         }
     };
 
@@ -222,6 +316,8 @@ namespace ReplSetTests {
             add< TestInitApplyOp >();
             add< TestInitApplyOp2 >();
             add< CappedInitialSync >();
+            add< CappedUpdate >();
+            add< CappedInsert >();
         }
     } myall;
 }

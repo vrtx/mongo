@@ -3,6 +3,10 @@ import re
 import socket
 import time
 import os
+import os.path
+import itertools
+import subprocess
+import sys
 # various utilities that are handy
 
 def getAllSourceFiles( arr=None , prefix="." ):
@@ -133,4 +137,57 @@ def didMongodStart( port=27017 , timeout=20 ):
             print( e )
             timeout = timeout - 1
     return False
+
+def which(executable):
+    if sys.platform == 'win32':
+        paths = os.environ.get('Path', '').split(';')
+    else:
+        paths = os.environ.get('PATH', '').split(':')
+
+    for path in paths:
+        path = os.path.expandvars(path)
+        path = os.path.expanduser(path)
+        path = os.path.abspath(path)
+        executable_path = os.path.join(path, executable)
+        if os.path.exists(executable_path):
+            return executable_path
+
+    return executable
+
+def find_python(min_version=(2, 5)):
+    try:
+        if sys.version_info >= min_version:
+            return sys.executable
+    except AttributeError:
+        # In case the version of Python is somehow missing sys.version_info or sys.executable.
+        pass
+
+    version = re.compile(r'[Pp]ython ([\d\.]+)', re.MULTILINE)
+    binaries = ('python27', 'python2.7', 'python26', 'python2.6', 'python25', 'python2.5', 'python')
+    for binary in binaries:
+        try:
+            out, err = subprocess.Popen([binary, '-V'], stdout=subprocess.PIPE, stderr=subprocess.PIPE).communicate()
+            for stream in (out, err):
+                match = version.search(stream)
+                if match:
+                    versiontuple = tuple(map(int, match.group(1).split('.')))
+                    if versiontuple >= min_version:
+                        return which(binary)
+        except:
+            pass
+
+    raise Exception('could not find suitable Python (version >= %s)' % '.'.join(str(v) for v in min_version))
+
+def smoke_command(*args):
+    # return a list of arguments that comprises a complete
+    # invocation of smoke.py
+    here = os.path.dirname(__file__)
+    smoke_py = os.path.abspath(os.path.join(here, 'smoke.py'))
+    return [find_python(), smoke_py] + list(args)
+
+def run_smoke_command(*args):
+    # to run a command line script from a scons Alias (or any
+    # Action), the command sequence must be enclosed in a list,
+    # otherwise SCons treats it as a list of dependencies.
+    return [smoke_command(*args)]
 

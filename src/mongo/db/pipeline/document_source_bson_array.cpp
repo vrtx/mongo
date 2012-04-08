@@ -17,8 +17,8 @@
 #include "pch.h"
 
 #include "db/pipeline/document_source.h"
-
 #include "db/pipeline/document.h"
+
 
 namespace mongo {
 
@@ -26,58 +26,62 @@ namespace mongo {
     }
 
     bool DocumentSourceBsonArray::eof() {
-	return !haveCurrent;
+        return !haveCurrent;
     }
 
     bool DocumentSourceBsonArray::advance() {
-	if (eof())
-	    return false;
+        DocumentSource::advance(); // check for interrupts
 
-	if (!arrayIterator.more()) {
-	    haveCurrent = false;
-	    return false;
-	}
+        if (eof())
+            return false;
 
-	currentElement = arrayIterator.next();
-	return true;
+        if (!arrayIterator.more()) {
+            haveCurrent = false;
+            return false;
+        }
+
+        currentElement = arrayIterator.next();
+        return true;
     }
 
     intrusive_ptr<Document> DocumentSourceBsonArray::getCurrent() {
-	assert(haveCurrent);
+        verify(haveCurrent);
         BSONObj documentObj(currentElement.Obj());
         intrusive_ptr<Document> pDocument(
             Document::createFromBsonObj(&documentObj));
         return pDocument;
     }
 
-    void DocumentSourceBsonArray::setSource(
-	const intrusive_ptr<DocumentSource> &pSource) {
-	/* this doesn't take a source */
-	assert(false);
+    void DocumentSourceBsonArray::setSource(DocumentSource *pSource) {
+        /* this doesn't take a source */
+        verify(false);
     }
 
     DocumentSourceBsonArray::DocumentSourceBsonArray(
-	BSONElement *pBsonElement):
+        BSONElement *pBsonElement,
+        const intrusive_ptr<ExpressionContext> &pExpCtx):
+        DocumentSource(pExpCtx),
         embeddedObject(pBsonElement->embeddedObject()),
         arrayIterator(embeddedObject),
         haveCurrent(false) {
-	if (arrayIterator.more()) {
-	    currentElement = arrayIterator.next();
-	    haveCurrent = true;
-	}
+        if (arrayIterator.more()) {
+            currentElement = arrayIterator.next();
+            haveCurrent = true;
+        }
     }
 
     intrusive_ptr<DocumentSourceBsonArray> DocumentSourceBsonArray::create(
-	BSONElement *pBsonElement) {
+        BSONElement *pBsonElement,
+        const intrusive_ptr<ExpressionContext> &pExpCtx) {
 
-	assert(pBsonElement->type() == Array);
-	intrusive_ptr<DocumentSourceBsonArray> pSource(
-	    new DocumentSourceBsonArray(pBsonElement));
+        verify(pBsonElement->type() == Array);
+        intrusive_ptr<DocumentSourceBsonArray> pSource(
+            new DocumentSourceBsonArray(pBsonElement, pExpCtx));
 
-	return pSource;
+        return pSource;
     }
 
     void DocumentSourceBsonArray::sourceToBson(BSONObjBuilder *pBuilder) const {
-	assert(false); // this has no analog in the BSON world
+        verify(false); // this has no analog in the BSON world
     }
 }

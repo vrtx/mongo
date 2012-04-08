@@ -5,6 +5,9 @@
    ./mongoperf -h
 */
 
+
+// note: mongoperf is an internal mongodb utility
+// so we define the following macro
 #define MONGO_EXPOSE_MACROS 1
 
 #include <iostream>
@@ -15,6 +18,8 @@
 #include "../../util/timer.h"
 #include "../../util/time_support.h"
 #include "../../bson/util/atomic_int.h"
+
+#include <boost/filesystem/operations.hpp>
 
 using namespace std;
 using namespace mongo;
@@ -98,7 +103,7 @@ void workerThread() {
 }
 
 void go() {
-    assert( options["r"].trueValue() || options["w"].trueValue() );
+    verify( options["r"].trueValue() || options["w"].trueValue() );
     MemoryMappedFile f;
     cout << "creating test file size:";
     len = options["fileSizeMB"].numberLong();
@@ -136,7 +141,7 @@ void go() {
         lf = 0;
         mmfFile = new MemoryMappedFile();
         mmf = (char *) mmfFile->map(fname);
-        assert( mmf );
+        verify( mmf );
 
         syncDelaySecs = options["syncDelay"].numberInt();
         if( syncDelaySecs ) {
@@ -209,7 +214,7 @@ cout <<
 "\n"
 
 << endl;
-            return 0;
+            return EXIT_SUCCESS;
         }
 
         cout << "use -h for help" << endl;
@@ -219,20 +224,19 @@ cout <<
         cin.read(input, 1000);
         if( *input == 0 ) { 
             cout << "error no options found on stdin for mongoperf" << endl;
-            return 2;
+            return EXIT_FAILURE;
         }
 
         string s = input;
-        str::stripTrailing(s, "\n\r\0x1a");
+        str::stripTrailing(s, " \n\r\0x1a");
         try { 
             options = fromjson(s);
         }
         catch(...) { 
-            cout << s << endl;
-            cout << "couldn't parse json options" << endl;
-            return -1;
+            cout << "couldn't parse json options. input was:\n|" << s << "|" << endl;
+            return EXIT_FAILURE;
         }
-        cout << "options:\n" << options.toString() << endl;
+        cout << "parsed options:\n" << options.toString() << endl;
 
         go();
 #if 0
@@ -261,9 +265,9 @@ cout <<
     } 
     catch(DBException& e) { 
         cout << "caught DBException " << e.toString() << endl;
-        return 1;
+        return EXIT_FAILURE;
     }
 
-    return 0;
+    return EXIT_SUCCESS;
 }
 

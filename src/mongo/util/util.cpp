@@ -32,14 +32,14 @@ namespace mongo {
         AtStartup() {
             LARGE_INTEGER x;
             bool ok = QueryPerformanceFrequency(&x);
-            assert(ok);
+            verify(ok);
             Timer::countsPerSecond = x.QuadPart;
         }
     } atstartuputil;
 #endif
 
     string hexdump(const char *data, unsigned len) {
-        assert( len < 1000000 );
+        verify( len < 1000000 );
         const unsigned char *p = (const unsigned char *) data;
         stringstream ss;
         for( unsigned i = 0; i < 4 && i < len; i++ ) {
@@ -54,20 +54,24 @@ namespace mongo {
 
     boost::thread_specific_ptr<string> _threadName;
 
-    unsigned _setThreadName( const char * name ) {
+    long long _setThreadName( const char * name ) {
         if ( ! name ) name = "NONE";
 
-        static unsigned N = 0;
+        static long long N = 0;
 
         if ( strcmp( name , "conn" ) == 0 ) {
             string* x = _threadName.get();
             if ( x && mongoutils::str::startsWith( *x , "conn" ) ) {
-                int n = atoi( x->c_str() + 4 );
+#if defined(_WIN32)
+                long long n = _atoi64( x->c_str() + 4 );
+#else
+                long long n = atoll( x->c_str() + 4 );
+#endif
                 if ( n > 0 )
                     return n;
                 warning() << "unexpected thread name [" << *x << "] parsed to " << n << endl;
             }
-            unsigned n = ++N;
+            long long n = ++N;
             stringstream ss;
             ss << name << n;
             _threadName.reset( new string( ss.str() ) );
@@ -105,8 +109,8 @@ namespace mongo {
         }
     }
 
-    unsigned setThreadName(const char *name) {
-        unsigned n = _setThreadName( name );
+    long long setThreadName(const char *name) {
+        long long n = _setThreadName( name );
 #if !defined(_DEBUG)
         // naming might be expensive so don't do "conn*" over and over
         if( string("conn") == name )
@@ -118,7 +122,7 @@ namespace mongo {
 
 #else
 
-    unsigned setThreadName(const char * name ) {
+    long long setThreadName(const char * name ) {
         return _setThreadName( name );
     }
 
@@ -163,19 +167,19 @@ namespace mongo {
 
     struct UtilTest : public UnitTest {
         void run() {
-            assert( isPrime(3) );
-            assert( isPrime(2) );
-            assert( isPrime(13) );
-            assert( isPrime(17) );
-            assert( !isPrime(9) );
-            assert( !isPrime(6) );
-            assert( nextPrime(4) == 5 );
-            assert( nextPrime(8) == 11 );
+            verify( isPrime(3) );
+            verify( isPrime(2) );
+            verify( isPrime(13) );
+            verify( isPrime(17) );
+            verify( !isPrime(9) );
+            verify( !isPrime(6) );
+            verify( nextPrime(4) == 5 );
+            verify( nextPrime(8) == 11 );
 
-            assert( endsWith("abcde", "de") );
-            assert( !endsWith("abcde", "dasdfasdfashkfde") );
+            verify( endsWith("abcde", "de") );
+            verify( !endsWith("abcde", "dasdfasdfashkfde") );
 
-            assert( swapEndian(0x01020304) == 0x04030201 );
+            verify( swapEndian(0x01020304) == 0x04030201 );
 
         }
     } utilTest;

@@ -16,8 +16,12 @@
  */
 
 #include "pch.h"
-#include "dbclient.h"
-#include "distlock.h"
+
+#include "mongo/client/distlock.h"
+
+#include "mongo/client/dbclient.h"
+#include "mongo/client/dbclientcursor.h"
+
 
 namespace mongo {
 
@@ -30,10 +34,16 @@ namespace mongo {
      * Module initialization
      */
 
-    boost::once_flag _init = BOOST_ONCE_INIT;
+    static SimpleMutex _cachedProcessMutex("distlock_initmodule");
     static string* _cachedProcessString = NULL;
 
     static void initModule() {
+        SimpleMutex::scoped_lock lk(_cachedProcessMutex);
+        if (_cachedProcessString) {
+            // someone got the lock before us
+            return;
+        }
+
         // cache process string
         stringstream ss;
         ss << getHostName() << ":" << cmdLine.port << ":" << time(0) << ":" << rand();
@@ -43,8 +53,9 @@ namespace mongo {
     /* =================== */
 
     string getDistLockProcess() {
-        boost::call_once( initModule, _init );
-        assert( _cachedProcessString );
+        if (!_cachedProcessString)
+            initModule();
+        verify( _cachedProcessString );
         return *_cachedProcessString;
     }
 
@@ -111,6 +122,9 @@ namespace mongo {
                     // replace it for a quite a while)
                     // if the lock is taken, the take-over mechanism should handle the situation
                     auto_ptr<DBClientCursor> c = conn->query( DistributedLock::locksNS , BSONObj() );
+                    // TODO:  Would be good to make clear whether query throws or returns empty on errors
+                    uassert( 16060, str::stream() << "cannot query locks collection on config server " << conn.getHost(), c.get() );
+
                     set<string> pids;
                     while ( c->more() ) {
                         BSONObj lock = c->next();
@@ -261,7 +275,7 @@ namespace mongo {
 
             string pingId = pingThreadId( conn, processId );
 
-            assert( _seen.count( pingId ) > 0 );
+            verify( _seen.count( pingId ) > 0 );
             _kill.insert( pingId );
 
         }
@@ -469,7 +483,7 @@ namespace mongo {
         }
 
         // This should always be true, if not, we are using the lock incorrectly.
-        assert( _name != "" );
+        verify( _name != "" );
 
         // write to dummy if 'other' is null
         BSONObj dummyOther;
@@ -527,7 +541,7 @@ namespace mongo {
                 unsigned long long takeover = _lockTimeout;
                 PingData _lastPingCheck = getLastPing();
 
-                log( logLvl ) << "checking last ping for lock '" << lockName << "'" << " against process " << _lastPingCheck.get<0>() << " and ping " << _lastPingCheck.get<1>() << endl;
+                log( logLvl ) << "checking last ping for lock '" << lockName << "'" << " against process " << _lastPingCheck.id << " and ping " << _lastPingCheck.lastPing << endl;
 
                 try {
 
@@ -536,8 +550,8 @@ namespace mongo {
                     // Timeout the elapsed time using comparisons of remote clock
                     // For non-finalized locks, timeout 15 minutes since last seen (ts)
                     // For finalized locks, timeout 15 minutes since last ping
-                    bool recPingChange = o["state"].numberInt() == 2 && ( _lastPingCheck.get<0>() != lastPing["_id"].String() || _lastPingCheck.get<1>() != lastPing["ping"].Date() );
-                    bool recTSChange = _lastPingCheck.get<3>() != o["ts"].OID();
+                    bool recPingChange = o["state"].numberInt() == 2 && ( _lastPingCheck.id != lastPing["_id"].String() || _lastPingCheck.lastPing != lastPing["ping"].Date() );
+                    bool recTSChange = _lastPingCheck.ts != o["ts"].OID();
 
                     if( recPingChange || recTSChange ) {
                         // If the ping has changed since we last checked, mark the current date and time
@@ -548,10 +562,10 @@ namespace mongo {
                         // GOTCHA!  Due to network issues, it is possible that the current time
                         // is less than the remote time.  We *have* to check this here, otherwise
                         // we overflow and our lock breaks.
-                        if(_lastPingCheck.get<2>() >= remote)
+                        if(_lastPingCheck.remote >= remote)
                             elapsed = 0;
                         else
-                            elapsed = remote - _lastPingCheck.get<2>();
+                            elapsed = remote - _lastPingCheck.remote;
                     }
                 }
                 catch( LockException& e ) {
@@ -624,7 +638,7 @@ namespace mongo {
                 }
                 else {
 
-                    assert( canReenter );
+                    verify( canReenter );
 
                     // Lock may be re-entered, reset our timer if succeeds or fails
                     // Not strictly necessary, but helpful for small timeouts where thread scheduling is significant.
@@ -667,7 +681,8 @@ namespace mongo {
                     }
 
                     log( logLvl - 1 ) << "re-entered distributed lock '" << lockName << "'" << endl;
-                    *other = o; other->getOwned(); conn.done();
+                    *other = o.getOwned(); 
+                    conn.done();
                     return true;
 
                 }
@@ -761,7 +776,8 @@ namespace mongo {
                         indUpdate = indDB->findOne( locksNS, _id );
 
                         // Our lock should now be set until forcing.
-                        assert( indUpdate["state"].numberInt() == 1 );
+                        // It's possible another lock has won entirely by now, so state could be 1 or 2 here
+                        verify( indUpdate["state"].numberInt() > 0 );
 
                     }
                     // else our lock is the same, in which case we're safe, or it's a bigger lock,
@@ -775,7 +791,7 @@ namespace mongo {
                                          << up[1].first << causedBy( e ), 13661 );
                 }
 
-                assert( !indUpdate.isEmpty() );
+                verify( !indUpdate.isEmpty() );
 
                 // Find max TS value
                 if ( currLock.isEmpty() || currLock["ts"] < indUpdate["ts"] ) {
@@ -876,7 +892,7 @@ namespace mongo {
     // and so cannot tell you what lock ts you should try later.
     void DistributedLock::unlock( BSONObj* oldLockPtr ) {
 
-        assert( _name != "" );
+        verify( _name != "" );
 
         string lockName = _name + string("/") + _processId;
 

@@ -24,7 +24,8 @@ function reset( matches, filler ) {
 function checkCursor( query, cursor ) {
     t.find(query).itcount();
     // Check that index on 'cursor' was chosen in the above query.
-    assert.eq( 'BtreeCursor ' + cursor, t.find(query).explain(true).oldPlan.cursor );    
+    var x = t.find(query).explain(true);
+    assert.eq( 'BtreeCursor ' + cursor, x.oldPlan.cursor , tojson(x) );    
 }
 
 // Check {b:1} takes over when {a:1} is much worse for query {a:100,b:100}.
@@ -33,11 +34,11 @@ checkCursor( {a:1,b:1}, 'a_1' );
 checkCursor( {a:100,b:100}, 'b_1' );
 
 // Check smallest filler for which {b:1} will take over.
-reset( 2, 11 );
+reset( 2, 12 );
 checkCursor( {a:1,b:1}, 'a_1' );
 checkCursor( {a:100,b:100}, 'b_1' );
 
 // Check largest filler for which {b:1} will not take over - demonstrating that new plans run alongside the old plan.
-reset( 2, 10 );
+reset( 2, 11 );
 checkCursor( {a:1,b:1}, 'a_1' );
 checkCursor( {a:100,b:100}, 'a_1' );

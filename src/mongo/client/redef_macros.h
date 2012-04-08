@@ -25,16 +25,16 @@
 #if defined(MONGO_MACROS_CLEANED)
 
 // util/allocator.h
+#pragma push_macro("malloc")
 #define malloc MONGO_malloc
 #define realloc MONGO_realloc
 
 // util/assert_util.h
-#define assert MONGO_assert
+#define verify MONGO_verify
 #define dassert MONGO_dassert
 #define wassert MONGO_wassert
 #define massert MONGO_massert
 #define uassert MONGO_uassert
-#define BOOST_CHECK_EXCEPTION MONGO_BOOST_CHECK_EXCEPTION
 #define DESTRUCTOR_GUARD MONGO_DESTRUCTOR_GUARD
 
 // util/goodies.h

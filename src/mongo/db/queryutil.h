@@ -19,12 +19,238 @@
 
 #include "jsobj.h"
 #include "indexkey.h"
+#include "projection.h"
 
 namespace mongo {
+    
+    extern const int MaxBytesToReturnToClientAtOnce;
 
+    /** Helper class for deduping DiskLocs */
+    class DiskLocDupSet {
+    public:
+        /** @return true if dup, otherwise return false and insert. */
+        bool getsetdup( const DiskLoc &loc ) {
+            pair<set<DiskLoc>::iterator, bool> p = _dups.insert(loc);
+            return !p.second;
+        }
+    private:
+        set<DiskLoc> _dups;
+    };
+    
+    /* This is for languages whose "objects" are not well ordered (JSON is well ordered).
+     [ { a : ... } , { b : ... } ] -> { a : ..., b : ... }
+     */
+    inline BSONObj transformOrderFromArrayFormat(BSONObj order) {
+        /* note: this is slow, but that is ok as order will have very few pieces */
+        BSONObjBuilder b;
+        char p[2] = "0";
+        
+        while ( 1 ) {
+            BSONObj j = order.getObjectField(p);
+            if ( j.isEmpty() )
+                break;
+            BSONElement e = j.firstElement();
+            uassert( 10102 , "bad order array", !e.eoo());
+            uassert( 10103 , "bad order array [2]", e.isNumber());
+            b.append(e);
+            (*p)++;
+            uassert( 10104 , "too many ordering elements", *p <= '9');
+        }
+        
+        return b.obj();
+    }
+    
+    class QueryMessage;
+    
     /**
-     * One side of an interval of valid BSONElements, specified by a value and a
-     * boolean indicating whether the interval includes the value.
+     * this represents a total user query
+     * includes fields from the query message, both possible query levels
+     * parses everything up front
+     */
+    class ParsedQuery : boost::noncopyable {
+    public:
+        ParsedQuery( QueryMessage& qm );
+        ParsedQuery( const char* ns , int ntoskip , int ntoreturn , int queryoptions , const BSONObj& query , const BSONObj& fields )
+        : _ns( ns ) , _ntoskip( ntoskip ) , _ntoreturn( ntoreturn ) , _options( queryoptions ) {
+            init( query );
+            initFields( fields );
+        }
+        
+        const char * ns() const { return _ns; }
+        bool isLocalDB() const { return strncmp(_ns, "local.", 6) == 0; }
+        
+        const BSONObj& getFilter() const { return _filter; }
+        Projection* getFields() const { return _fields.get(); }
+        shared_ptr<Projection> getFieldPtr() const { return _fields; }
+        
+        int getSkip() const { return _ntoskip; }
+        int getNumToReturn() const { return _ntoreturn; }
+        bool wantMore() const { return _wantMore; }
+        int getOptions() const { return _options; }
+        bool hasOption( int x ) const { return ( x & _options ) != 0; }
+        
+        bool isExplain() const { return _explain; }
+        bool isSnapshot() const { return _snapshot; }
+        bool returnKey() const { return _returnKey; }
+        bool showDiskLoc() const { return _showDiskLoc; }
+        
+        const BSONObj& getMin() const { return _min; }
+        const BSONObj& getMax() const { return _max; }
+        const BSONObj& getOrder() const { return _order; }
+        const BSONObj& getHint() const { return _hint; }
+        int getMaxScan() const { return _maxScan; }
+        
+        bool couldBeCommand() const {
+            /* we assume you are using findOne() for running a cmd... */
+            return _ntoreturn == 1 && strstr( _ns , ".$cmd" );
+        }
+        
+        bool hasIndexSpecifier() const {
+            return ! _hint.isEmpty() || ! _min.isEmpty() || ! _max.isEmpty();
+        }
+        
+        /* if ntoreturn is zero, we return up to 101 objects.  on the subsequent getmore, there
+         is only a size limit.  The idea is that on a find() where one doesn't use much results,
+         we don't return much, but once getmore kicks in, we start pushing significant quantities.
+         
+         The n limit (vs. size) is important when someone fetches only one small field from big
+         objects, which causes massive scanning server-side.
+         */
+        bool enoughForFirstBatch( int n , int len ) const {
+            if ( _ntoreturn == 0 )
+                return ( len > 1024 * 1024 ) || n >= 101;
+            return n >= _ntoreturn || len > MaxBytesToReturnToClientAtOnce;
+        }
+        
+        bool enough( int n ) const {
+            if ( _ntoreturn == 0 )
+                return false;
+            return n >= _ntoreturn;
+        }
+        
+        bool enoughForExplain( long long n ) const {
+            if ( _wantMore || _ntoreturn == 0 ) {
+                return false;
+            }
+            return n >= _ntoreturn;            
+        }
+        
+    private:
+        void init( const BSONObj& q ) {
+            _reset();
+            uassert( 10105 , "bad skip value in query", _ntoskip >= 0);
+            
+            if ( _ntoreturn < 0 ) {
+                /* _ntoreturn greater than zero is simply a hint on how many objects to send back per
+                 "cursor batch".
+                 A negative number indicates a hard limit.
+                 */
+                _wantMore = false;
+                _ntoreturn = -_ntoreturn;
+            }
+            
+            
+            BSONElement e = q["query"];
+            if ( ! e.isABSONObj() )
+                e = q["$query"];
+            
+            if ( e.isABSONObj() ) {
+                _filter = e.embeddedObject();
+                _initTop( q );
+            }
+            else {
+                _filter = q;
+            }
+        }
+        
+        void _reset() {
+            _wantMore = true;
+            _explain = false;
+            _snapshot = false;
+            _returnKey = false;
+            _showDiskLoc = false;
+            _maxScan = 0;
+        }
+        
+        void _initTop( const BSONObj& top ) {
+            BSONObjIterator i( top );
+            while ( i.more() ) {
+                BSONElement e = i.next();
+                const char * name = e.fieldName();
+                
+                if ( strcmp( "$orderby" , name ) == 0 ||
+                    strcmp( "orderby" , name ) == 0 ) {
+                    if ( e.type() == Object ) {
+                        _order = e.embeddedObject();
+                    }
+                    else if ( e.type() == Array ) {
+                        _order = transformOrderFromArrayFormat( _order );
+                    }
+                    else {
+                        uasserted(13513, "sort must be an object or array");
+                    }
+                    continue;
+                }
+                
+                if( *name == '$' ) {
+                    name++;
+                    if ( strcmp( "explain" , name ) == 0 )
+                        _explain = e.trueValue();
+                    else if ( strcmp( "snapshot" , name ) == 0 )
+                        _snapshot = e.trueValue();
+                    else if ( strcmp( "min" , name ) == 0 )
+                        _min = e.embeddedObject();
+                    else if ( strcmp( "max" , name ) == 0 )
+                        _max = e.embeddedObject();
+                    else if ( strcmp( "hint" , name ) == 0 )
+                        _hint = e.wrap();
+                    else if ( strcmp( "returnKey" , name ) == 0 )
+                        _returnKey = e.trueValue();
+                    else if ( strcmp( "maxScan" , name ) == 0 )
+                        _maxScan = e.numberInt();
+                    else if ( strcmp( "showDiskLoc" , name ) == 0 )
+                        _showDiskLoc = e.trueValue();
+                    else if ( strcmp( "comment" , name ) == 0 ) {
+                        ; // no-op
+                    }
+                }
+            }
+            
+            if ( _snapshot ) {
+                uassert( 12001 , "E12001 can't sort with $snapshot", _order.isEmpty() );
+                uassert( 12002 , "E12002 can't use hint with $snapshot", _hint.isEmpty() );
+            }
+            
+        }
+        
+        void initFields( const BSONObj& fields ) {
+            if ( fields.isEmpty() )
+                return;
+            _fields.reset( new Projection() );
+            _fields->init( fields );
+        }
+        
+        const char * const _ns;
+        const int _ntoskip;
+        int _ntoreturn;
+        BSONObj _filter;
+        BSONObj _order;
+        const int _options;
+        shared_ptr< Projection > _fields;
+        bool _wantMore;
+        bool _explain;
+        bool _snapshot;
+        bool _returnKey;
+        bool _showDiskLoc;
+        BSONObj _min;
+        BSONObj _max;
+        BSONObj _hint;
+        int _maxScan;
+    };
+    
+    /**
+     * One side of an interval of BSONElements, defined by a value and a boolean indicating if the
+     * interval includes the value.
      */
     struct FieldBound {
         BSONElement _bound;
@@ -36,7 +262,7 @@ namespace mongo {
         void flipInclusive() { _inclusive = !_inclusive; }
     };
 
-    /** A closed interval composed of a lower and an upper FieldBound. */
+    /** An interval defined between a lower and an upper FieldBound. */
     struct FieldInterval {
         FieldInterval() : _cachedEquality( -1 ) {}
         FieldInterval( const BSONElement& e ) : _cachedEquality( -1 ) {
@@ -79,21 +305,22 @@ namespace mongo {
          * be extracted.
          */
         
-        BSONElement min() const { assert( !empty() ); return _intervals[ 0 ]._lower._bound; }
-        BSONElement max() const { assert( !empty() ); return _intervals[ _intervals.size() - 1 ]._upper._bound; }
-        bool minInclusive() const { assert( !empty() ); return _intervals[ 0 ]._lower._inclusive; }
-        bool maxInclusive() const { assert( !empty() ); return _intervals[ _intervals.size() - 1 ]._upper._inclusive; }
+        BSONElement min() const { verify( !empty() ); return _intervals[ 0 ]._lower._bound; }
+        BSONElement max() const { verify( !empty() ); return _intervals[ _intervals.size() - 1 ]._upper._bound; }
+        bool minInclusive() const { verify( !empty() ); return _intervals[ 0 ]._lower._inclusive; }
+        bool maxInclusive() const { verify( !empty() ); return _intervals[ _intervals.size() - 1 ]._upper._inclusive; }
 
         /** @return true iff this range expresses a single equality interval. */
         bool equality() const;
-        /** @return true if all the intervals for this range are equalities */
-        bool inQuery() const;
-        /** @return true iff this range matches some but not all BSONElements. */
-        bool nontrivial() const;
-        /** @return true iff this range matches no BSONElements. */
+        /**
+         * @return true iff this range includes all BSONElements
+         * (the range is the universal set of BSONElements).
+         */
+        bool universal() const;
+        /** @return true iff this range includes no BSONElements. */
         bool empty() const { return _intervals.empty(); }
         
-        /** Empty the range so it matches no BSONElements. */
+        /** Empty the range so it includes no BSONElements. */
         void makeEmpty() { _intervals.clear(); }
         const vector<FieldInterval> &intervals() const { return _intervals; }
         string getSpecial() const { return _special; }
@@ -116,7 +343,7 @@ namespace mongo {
         string _special;
         bool _singleKey;
     };
-
+    
     /**
      * A BoundList contains intervals specified by inclusive start
      * and end bounds.  The intervals should be nonoverlapping and occur in
@@ -138,17 +365,12 @@ namespace mongo {
         friend class FieldRangeVector;
         FieldRangeSet( const char *ns, const BSONObj &query , bool singleKey , bool optimize=true );
         
-        /** @return true if there is a nontrivial range for the given field. */
-        bool hasRange( const char *fieldName ) const {
-            map<string, FieldRange>::const_iterator f = _ranges.find( fieldName );
-            return f != _ranges.end();
-        }
         /** @return range for the given field. */
         const FieldRange &range( const char *fieldName ) const;
         /** @return range for the given field. */
         FieldRange &range( const char *fieldName );
-        /** @return the number of nontrivial ranges. */
-        int nNontrivialRanges() const;
+        /** @return the number of non universal ranges. */
+        int numNonUniversalRanges() const;
         /** @return the field ranges comprising this set. */
         const map<string,FieldRange> &ranges() const { return _ranges; }
         /** 
@@ -164,10 +386,10 @@ namespace mongo {
          */
         bool matchPossibleForIndex( const BSONObj &keyPattern ) const;
         
-        const char *ns() const { return _ns; }
+        const char *ns() const { return _ns.c_str(); }
         
         /**
-         * @return a simplified query from the extreme values of the nontrivial
+         * @return a simplified query from the extreme values of the non universal
          * fields.
          * @param fields If specified, the fields of the returned object are
          * ordered to match those of 'fields'.
@@ -209,16 +431,18 @@ namespace mongo {
         bool singleKey() const { return _singleKey; }
         
         BSONObj originalQuery() const { return _queries[ 0 ]; }
+        
+        string toString() const;
     private:
         void appendQueries( const FieldRangeSet &other );
         void makeEmpty();
         void processQueryField( const BSONElement &e, bool optimize );
         void processOpElement( const char *fieldName, const BSONElement &f, bool isNot, bool optimize );
-        static FieldRange *__singleKeyTrivialRange;
-        static FieldRange *__multiKeyTrivialRange;
-        const FieldRange &trivialRange() const;
+        static FieldRange *__singleKeyUniversalRange;
+        static FieldRange *__multiKeyUniversalRange;
+        const FieldRange &universalRange() const;
         map<string,FieldRange> _ranges;
-        const char *_ns;
+        string _ns;
         // Owns memory for FieldRange BSONElements.
         vector<BSONObj> _queries;
         bool _singleKey;
@@ -246,11 +470,11 @@ namespace mongo {
         const FieldRangeSet &frsForIndex( const NamespaceDetails* nsd, int idxNo ) const;
 
         /** @return a field range in the single key FieldRangeSet. */
-        const FieldRange &singleKeyRange( const char *fieldName ) const {
+        const FieldRange &shardKeyRange( const char *fieldName ) const {
             return _singleKey.range( fieldName );
         }
         /** @return true if the range limits are equivalent to an empty query. */
-        bool noNontrivialRanges() const;
+        bool noNonUniversalRanges() const;
         /** @return false if a match is impossible regardless of index. */
         bool matchPossible() const { return _multiKey.matchPossible(); }
         /**
@@ -271,12 +495,17 @@ namespace mongo {
          */
         FieldRangeSetPair &operator-=( const FieldRangeSet &scanned );
 
-        BoundList singleKeyIndexBounds( const BSONObj &keyPattern, int direction ) const {
-            return _singleKey.indexBounds( keyPattern, direction );
+        BoundList shardKeyIndexBounds( const BSONObj &keyPattern ) const {
+            return _singleKey.indexBounds( keyPattern, 1 );
+        }
+        
+        bool matchPossibleForShardKey( const BSONObj &keyPattern ) const {
+            return _singleKey.matchPossibleForIndex( keyPattern );
         }
         
         BSONObj originalQuery() const { return _singleKey.originalQuery(); }
 
+        string toString() const;
     private:
         FieldRangeSetPair( const FieldRangeSet &singleKey, const FieldRangeSet &multiKey )
         :_singleKey( singleKey ), _multiKey( multiKey ) {}
@@ -299,7 +528,8 @@ namespace mongo {
     class FieldRangeVector {
     public:
         /**
-         * @param frs The valid ranges for all fields, as defined by the query spec
+         * @param frs The valid ranges for all fields, as defined by the query spec.  None of the
+         * fields in indexSpec may be empty() ranges of frs.
          * @param indexSpec The index spec (key pattern and info)
          * @param direction The direction of index traversal
          */
@@ -329,6 +559,8 @@ namespace mongo {
          * index scan using this FieldRangeVector, BSONObj() if no such key.
          */
         BSONObj firstMatch( const BSONObj &obj ) const;
+        
+        string toString() const;
         
     private:
         int matchingLowElement( const BSONElement &e, int i, bool direction, bool &lowEquality ) const;
@@ -395,11 +627,8 @@ namespace mongo {
     public:
         OrRangeGenerator( const char *ns, const BSONObj &query , bool optimize=true );
 
-        /**
-         * @return true iff we are done scanning $or clauses.  if there's a
-         * useless or clause, we won't use or index ranges to help with scanning.
-         */
-        bool orFinished() const { return _orFound && _orSets.empty(); }
+        /** @return true iff we are done scanning $or clauses, or if there are no $or clauses. */
+        bool orRangesExhausted() const { return _orSets.empty(); }
         /** Iterates to the next $or clause by removing the current $or clause. */
         void popOrClause( NamespaceDetails *nsd, int idxNo, const BSONObj &keyPattern );
         void popOrClauseSingleKey();
@@ -414,11 +643,9 @@ namespace mongo {
         FieldRangeSetPair *topFrspOriginal() const;
         
         string getSpecial() const { return _baseSet.getSpecial(); }
-
-        bool moreOrClauses() const { return !_orSets.empty(); }
     private:
         void assertMayPopOrClause();
-        void popOrClause( const FieldRangeSet *toDiff, NamespaceDetails *d = 0, int idxNo = -1, const BSONObj &keyPattern = BSONObj() );
+        void _popOrClause( const FieldRangeSet *toDiff, NamespaceDetails *d, int idxNo, const BSONObj &keyPattern );
         FieldRangeSetPair _baseSet;
         list<FieldRangeSetPair> _orSets;
         list<FieldRangeSetPair> _originalOrSets;
@@ -440,6 +667,8 @@ namespace mongo {
     string simpleRegexEnd( string prefix );
 
     long long applySkipLimit( long long num , const BSONObj& cmd );
+    
+    bool isSimpleIdQuery( const BSONObj& query );
 
 } // namespace mongo
 

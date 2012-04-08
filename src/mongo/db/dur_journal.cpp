@@ -28,17 +28,19 @@
 #include "../util/net/listen.h" // getelapsedtimemillis
 #include <boost/static_assert.hpp>
 #include <boost/filesystem.hpp>
-#undef assert
-#define assert MONGO_assert
 #include "../util/mongoutils/str.h"
 #include "dur_journalimpl.h"
 #include "../util/file.h"
 #include "../util/checksum.h"
 #include "../util/concurrency/race.h"
 #include "../util/compress.h"
+#include "../util/progress_meter.h"
 #include "../server.h"
+#include "../util/mmap.h"
 
 using namespace mongoutils;
+
+#include <boost/filesystem/operations.hpp>
 
 namespace mongo {
 
@@ -71,7 +73,7 @@ namespace mongo {
 
         bool usingPreallocate = false;
 
-        void removeOldJournalFile(path p);
+        void removeOldJournalFile(boost::filesystem::path p);
 
         boost::filesystem::path getJournalDir() {
             boost::filesystem::path p(dbpath);
@@ -79,7 +81,7 @@ namespace mongo {
             return p;
         }
 
-        path lsnPath() {
+        boost::filesystem::path lsnPath() {
             return getJournalDir()/"lsn";
         }
 
@@ -92,7 +94,7 @@ namespace mongo {
                 (2b) refuse to do a recovery startup if that is there without manual override.
             */
             log() << "journaling failure/error: " << msg << endl;
-            assert(false);
+            verify(false);
         }
 
         JSectFooter::JSectFooter() { 
@@ -157,7 +159,7 @@ namespace mongo {
             _writeToLSNNeeded = false;
         }
 
-        path Journal::getFilePathFor(int filenumber) const {
+        boost::filesystem::path Journal::getFilePathFor(int filenumber) const {
             boost::filesystem::path p(dir);
             p /= string(str::stream() << "j._" << filenumber);
             return p;
@@ -210,7 +212,7 @@ namespace mongo {
                 log() << "error removing journal files " << e.what() << endl;
                 throw;
             }
-            assert(!haveJournalFiles());
+            verify(!haveJournalFiles());
 
             flushMyDirectory(getJournalDir() / "file"); // flushes parent of argument (in this case journal dir)
 
@@ -289,7 +291,7 @@ namespace mongo {
             log() << "preallocating a journal file " << p.string() << endl;
 
             const unsigned BLKSZ = 1024 * 1024;
-            assert( len % BLKSZ == 0 );
+            verify( len % BLKSZ == 0 );
 
             AlignedBuilder b(BLKSZ);            
             memset((void*)b.buf(), 0, BLKSZ);
@@ -298,21 +300,21 @@ namespace mongo {
 
             File f;
             f.open( p.string().c_str() , /*read-only*/false , /*direct-io*/false );
-            assert( f.is_open() );
+            verify( f.is_open() );
             fileofs loc = 0;
             while ( loc < len ) {
                 f.write( loc , b.buf() , BLKSZ );
                 loc += BLKSZ;
                 m.hit(BLKSZ);
             }
-            assert( loc == len );
+            verify( loc == len );
             f.fsync();
         }
 
         const int NUM_PREALLOC_FILES = 3;
         inline boost::filesystem::path preallocPath(int n) {
-            assert(n >= 0);
-            assert(n < NUM_PREALLOC_FILES);
+            verify(n >= 0);
+            verify(n < NUM_PREALLOC_FILES);
             string fn = str::stream() << "prealloc." << n;
             return getJournalDir() / fn;
         }
@@ -346,8 +348,8 @@ namespace mongo {
 
             if (freeSpace + prealloced < spaceNeeded) {
                 log() << endl;
-                error() << "Insufficient free space for journals." << endl;
-                log() << "Please make at least " << spaceNeeded/(1024*1024) << "MB available in " << getJournalDir().string() << endl;
+                error() << "Insufficient free space for journal files" << endl;
+                log() << "Please make at least " << spaceNeeded/(1024*1024) << "MB available in " << getJournalDir().string() << " or use --smallfiles" << endl;
                 log() << endl;
                 throw UserException(15926, "Insufficient free space for journals");
             }
@@ -371,7 +373,7 @@ namespace mongo {
             j.open();
         }
 
-        void removeOldJournalFile(path p) { 
+        void removeOldJournalFile(boost::filesystem::path p) { 
             if( usingPreallocate ) {
                 try {
                     for( int i = 0; i < NUM_PREALLOC_FILES; i++ ) {
@@ -410,7 +412,7 @@ namespace mongo {
         }
 
         // find a prealloc.<n> file, presumably to take and use
-        path findPrealloced() { 
+        boost::filesystem::path findPrealloced() { 
             try {
                 for( int i = 0; i < NUM_PREALLOC_FILES; i++ ) {
                     boost::filesystem::path filepath = preallocPath(i);
@@ -420,7 +422,7 @@ namespace mongo {
             } catch(...) { 
                 log() << "warning exception in dur::findPrealloced()" << endl;
             }
-            return path();
+            return boost::filesystem::path();
         }
 
         /** assure journal/ dir exists. throws. call during startup. */
@@ -430,9 +432,9 @@ namespace mongo {
             boost::filesystem::path p = getJournalDir();
             j.dir = p.string();
             log() << "journal dir=" << j.dir << endl;
-            if( !exists(j.dir) ) {
+            if( !boost::filesystem::exists(j.dir) ) {
                 try {
-                    create_directory(j.dir);
+                    boost::filesystem::create_directory(j.dir);
                 }
                 catch(std::exception& e) {
                     log() << "error creating directory " << j.dir << ' ' << e.what() << endl;
@@ -443,12 +445,12 @@ namespace mongo {
 
         void Journal::_open() {
             _curFileId = 0;
-            assert( _curLogFile == 0 );
-            path fname = getFilePathFor(_nextFileNumber);
+            verify( _curLogFile == 0 );
+            boost::filesystem::path fname = getFilePathFor(_nextFileNumber);
 
             // if we have a prealloced file, use it 
             {
-                path p = findPrealloced();
+                boost::filesystem::path p = findPrealloced();
                 if( !p.empty() ) { 
                     try { 
                         {
@@ -472,7 +474,7 @@ namespace mongo {
             {
                 JHeader h(fname.string());
                 _curFileId = h.fileId;
-                assert(_curFileId);
+                verify(_curFileId);
                 AlignedBuilder b(8192);
                 b.appendStruct(h);
                 _curLogFile->synchronousAppend(b.buf(), b.len());
@@ -480,13 +482,13 @@ namespace mongo {
         }
 
         void Journal::init() {
-            assert( _curLogFile == 0 );
+            verify( _curLogFile == 0 );
             MongoFile::notifyPreFlush = preFlush;
             MongoFile::notifyPostFlush = postFlush;
         }
 
         void Journal::open() {
-            assert( MongoFile::notifyPreFlush == preFlush );
+            verify( MongoFile::notifyPreFlush == preFlush );
             SimpleMutex::scoped_lock lk(_curLogFileMutex);
             _open();
         }
@@ -512,7 +514,7 @@ namespace mongo {
         /** called during recovery (the error message text below assumes that)
         */
         unsigned long long journalReadLSN() {
-            if( !MemoryMappedFile::exists(lsnPath()) ) {
+            if( !exists(lsnPath()) ) {
                 log() << "info no lsn file in journal/ directory" << endl;
                 return 0;
             }
@@ -523,7 +525,7 @@ namespace mongo {
                 LSNFile L;
                 File f;
                 f.open(lsnPath().string().c_str());
-                assert(f.is_open());
+                verify(f.is_open());
                 if( f.len() == 0 ) { 
                     // this could be 'normal' if we crashed at the right moment
                     log() << "info lsn file is zero bytes long" << endl;
@@ -607,7 +609,7 @@ namespace mongo {
 
                 if( f.lastEventTimeMs < _lastFlushTime + ExtraKeepTimeMs ) {
                     // eligible for deletion
-                    path p( f.filename );
+                    boost::filesystem::path p( f.filename );
                     log() << "old journal file will be removed: " << f.filename << endl;
                     removeOldJournalFile(p);
                 }
@@ -632,7 +634,7 @@ namespace mongo {
 
         void Journal::_rotate() {
             if( d.dbMutex.atLeastReadLocked() ) { 
-                LOGSOME << "info journal _rotate called insider dbMutex - ok but should be somewhat rare" << endl;
+                LOGSOME << "info journal _rotate called inside dbMutex - ok but should be somewhat rare" << endl;
             }
 
             RACECHECK;
@@ -696,15 +698,15 @@ namespace mongo {
 
             size_t compressedLength = 0;
             rawCompress(uncompressed.buf(), uncompressed.len(), b.cur(), &compressedLength);
-            assert( compressedLength < 0xffffffff );
-            assert( compressedLength < max );
+            verify( compressedLength < 0xffffffff );
+            verify( compressedLength < max );
             b.skip(compressedLength);
 
             // footer
             unsigned L = 0xffffffff;
             {
                 // pad to alignment, and set the total section length in the JSectHeader
-                assert( 0xffffe000 == (~(Alignment-1)) );
+                verify( 0xffffe000 == (~(Alignment-1)) );
                 unsigned lenUnpadded = b.len() + sizeof(JSectFooter);
                 L = (lenUnpadded + Alignment-1) & (~(Alignment-1));
                 dassert( L >= lenUnpadded );
@@ -723,12 +725,12 @@ namespace mongo {
                 SimpleMutex::scoped_lock lk(_curLogFileMutex);
 
                 // must already be open -- so that _curFileId is correct for previous buffer building
-                assert( _curLogFile );
+                verify( _curLogFile );
 
-                stats.curr->_uncompressedBytes += b.len();
+                stats.curr->_uncompressedBytes += uncompressed.len();
                 unsigned w = b.len();
                 _written += w;
-                assert( w <= L );
+                verify( w <= L );
                 stats.curr->_journaledBytes += L;
                 _curLogFile->synchronousAppend((const void *) b.buf(), L);
                 _rotate();

@@ -34,6 +34,7 @@
 #include "../util/net/message_port.h"
 #include "../util/concurrency/rwlock.h"
 #include "d_concurrency.h"
+#include "mongo/util/paths.h"
 
 namespace mongo {
 
@@ -47,12 +48,6 @@ namespace mongo {
     class LockCollectionForReading;
     class PageFaultRetryableSection;
 
-#if defined(CLC)
-    typedef LockCollectionForReading _LockCollectionForReading;
-#else
-    typedef readlock _LockCollectionForReading;
-#endif
-
     TSP_DECLARE(Client, currentClient)
 
     typedef long long ConnectionId;
@@ -62,8 +57,8 @@ namespace mongo {
         static Client *syncThread;
     public:
         // always be in clientsMutex when manipulating this. killop stuff uses these.
-        static set<Client*> clients;      
-        static mongo::mutex clientsMutex; 
+        static set<Client*>& clients;
+        static mongo::mutex& clientsMutex;
         static int getActiveClientCount( int& writers , int& readers );
         class Context;
         ~Client();
@@ -115,11 +110,21 @@ namespace mongo {
         string toString() const;
         void gotHandshake( const BSONObj& o );
         bool hasRemote() const { return _mp; }
-        HostAndPort getRemote() const { assert( _mp ); return _mp->remote(); }
+        HostAndPort getRemote() const { verify( _mp ); return _mp->remote(); }
         BSONObj getRemoteID() const { return _remoteId; }
         BSONObj getHandshake() const { return _handshake; }
         AbstractMessagingPort * port() const { return _mp; }
         ConnectionId getConnectionId() const { return _connectionId; }
+
+        bool inPageFaultRetryableSection() const { return _pageFaultRetryableSection != 0; }
+        PageFaultRetryableSection* getPageFaultRetryableSection() const { return _pageFaultRetryableSection; }
+        
+        bool hasWrittenThisPass() const { return _hasWrittenThisPass; }
+        void writeHappened() { _hasWrittenThisPass = true; }
+        void newTopLevelRequest() { _hasWrittenThisPass = false; }
+        
+        bool allowedToThrowPageFaultException() const;
+
     private:
         Client(const char *desc, AbstractMessagingPort *p = 0);
         friend class CurOp;
@@ -136,9 +141,12 @@ namespace mongo {
         BSONObj _remoteId;
         AbstractMessagingPort * const _mp;
         unsigned _sometimes;
-    public:
+
         bool _hasWrittenThisPass;
         PageFaultRetryableSection *_pageFaultRetryableSection;
+        
+        friend class PageFaultRetryableSection; // TEMP
+    public:
 
         /** the concept here is the same as MONGO_SOMETIMES.  however that 
             macro uses a static that will be shared by all threads, and each 
@@ -165,7 +173,7 @@ namespace mongo {
             ReadContext(const string& ns, string path=dbpath, bool doauth=true );
             Context& ctx() { return *c.get(); }
         private:
-            scoped_ptr<_LockCollectionForReading> lk;
+            scoped_ptr<Lock::DBRead> lk;
             scoped_ptr<Context> c;
         };
 
@@ -175,7 +183,7 @@ namespace mongo {
         class Context : boost::noncopyable {
         public:
             /** this is probably what you want */
-            Context(const string& ns, string path=dbpath, bool doauth=true );
+            Context(const string& ns, string path=dbpath, bool doauth=true, bool doVersion=true );
 
             /** note: this does not call finishInit -- i.e., does not call 
                       shardVersionOk() for example. 
@@ -199,7 +207,7 @@ namespace mongo {
             bool inDB( const string& db , const string& path=dbpath ) const;
 
             void _clear() { // this is sort of an "early destruct" indication, _ns can never be uncleared
-                const_cast<string&>(_ns).empty();
+                const_cast<string&>(_ns).clear();
                 _db = 0;
             }
 
@@ -216,34 +224,23 @@ namespace mongo {
             void _finishInit( bool doauth=true);
             void _auth( int lockState );
             void checkNotStale() const;
-            void checkNsAccess( bool doauth, int lockState = d.dbMutex.getState() );
+            void checkNsAccess( bool doauth );
+            void checkNsAccess( bool doauth, int lockState );
             Client * const _client;
             Context * const _oldContext;
             const string _path;
             bool _justCreated;
+            bool _doVersion;
             const string _ns;
             Database * _db;
         }; // class Client::Context
-
-        struct LockStatus {
-            LockStatus();
-            string whichCollection;
-            unsigned excluder, global, collection;
-            string toString() const;
-        } lockStatus;
-
-#if defined(CLC)
-        void checkLocks() const;
-#else
-        void checkLocks() const { }
-#endif
 
     }; // class Client
 
     /** get the Client object for this thread. */
     inline Client& cc() {
         Client * c = currentClient.get();
-        assert( c );
+        verify( c );
         return *c;
     }
 

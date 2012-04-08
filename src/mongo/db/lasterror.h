@@ -28,7 +28,7 @@ namespace mongo {
         string msg;
         enum UpdatedExistingType { NotUpdate, True, False } updatedExisting;
         OID upsertedId;
-        OID writebackId;
+        OID writebackId; // this shouldn't get reset so that old GLE are handled
         long long nObjects;
         int nPrev;
         bool valid;
@@ -66,13 +66,19 @@ namespace mongo {
             valid = _valid;
             disabled = false;
             upsertedId.clear();
-            writebackId.clear();
         }
 
         /**
          * @return if there is an err
          */
         bool appendSelf( BSONObjBuilder &b , bool blankErr = true );
+
+        /**
+         * appends fields which are not "error" related
+         * this whole mechanism needs to be re-written
+         * but needs a lot of real thought
+         */
+        void appendSelfStatus( BSONObjBuilder &b );
 
         struct Disabled : boost::noncopyable {
             Disabled( LastError * le ) {
@@ -108,7 +114,7 @@ namespace mongo {
             LastError * le = get(false);
             if ( ! le ) {
                 error() << " no LastError!" << endl;
-                assert( le );
+                verify( le );
             }
             return le;
         }

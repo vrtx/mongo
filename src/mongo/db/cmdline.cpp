@@ -33,6 +33,9 @@
 
 #define MAX_LINE_LENGTH 256
 
+#include <fstream>
+#include <boost/filesystem/operations.hpp>
+
 namespace po = boost::program_options;
 namespace fs = boost::filesystem;
 
@@ -83,18 +86,17 @@ namespace mongo {
 
     }
 
-
 #if defined(_WIN32)
     void CmdLine::addWindowsOptions( boost::program_options::options_description& windows ,
                                      boost::program_options::options_description& hidden ) {
         windows.add_options()
-        ("install", "install mongodb service")
-        ("remove", "remove mongodb service")
-        ("reinstall", "reinstall mongodb service (equivilant of mongod --remove followed by mongod --install)")
-        ("serviceName", po::value<string>(), "windows service name")
-        ("serviceDisplayName", po::value<string>(), "windows service display name")
-        ("serviceDescription", po::value<string>(), "windows service description")
-        ("serviceUser", po::value<string>(), "user name service executes as")
+        ("install", "install Windows service")
+        ("remove", "remove Windows service")
+        ("reinstall", "reinstall Windows service (equivalent to --remove followed by --install)")
+        ("serviceName", po::value<string>(), "Windows service name")
+        ("serviceDisplayName", po::value<string>(), "Windows service display name")
+        ("serviceDescription", po::value<string>(), "Windows service description")
+        ("serviceUser", po::value<string>(), "account for service execution")
         ("servicePassword", po::value<string>(), "password used to authenticate serviceUser")
         ;
         hidden.add_options()("service", "start mongodb service");
@@ -140,14 +142,14 @@ namespace mongo {
     }
 
     void setupLaunchSignals() {
-        assert( signal(SIGUSR2 , launchSignal ) != SIG_ERR );
+        verify( signal(SIGUSR2 , launchSignal ) != SIG_ERR );
     }
 
 
     void CmdLine::launchOk() {
         if ( cmdLine.doFork ) {
             // killing leader will propagate to parent
-            assert( kill( cmdLine.leaderProc, SIGUSR2 ) == 0 );
+            verify( kill( cmdLine.leaderProc, SIGUSR2 ) == 0 );
         }
     }
 #endif
@@ -169,9 +171,9 @@ namespace mongo {
             // setup cwd
             char buffer[1024];
 #ifdef _WIN32
-            assert( _getcwd( buffer , 1000 ) );
+            verify( _getcwd( buffer , 1000 ) );
 #else
-            assert( getcwd( buffer , 1000 ) );
+            verify( getcwd( buffer , 1000 ) );
 #endif
             cmdLine.cwd = buffer;
         }
@@ -253,6 +255,14 @@ namespace mongo {
             cmdLine.objcheck = true;
         }
 
+        if (params.count("bind_ip")) {
+            // passing in wildcard is the same as default behavior; remove and warn
+            if ( cmdLine.bind_ip ==  "0.0.0.0" ) {
+                cout << "warning: bind_ip of 0.0.0.0 is unnecessary; listens on all ips by default" << endl;
+                cmdLine.bind_ip = "";
+            }
+        }
+
         string logpath;
 
 #ifndef _WIN32
@@ -268,7 +278,7 @@ namespace mongo {
             cmdLine.noUnixSocket = true;
         }
 
-        if (params.count("fork")) {
+        if (params.count("fork") && !params.count("shutdown")) {
             cmdLine.doFork = true;
             if ( ! params.count( "logpath" ) && ! params.count( "syslog" ) ) {
                 cout << "--fork has to be used with --logpath or --syslog" << endl;
@@ -278,7 +288,7 @@ namespace mongo {
             if ( params.count( "logpath" ) ) {
                 // test logpath
                 logpath = params["logpath"].as<string>();
-                assert( logpath.size() );
+                verify( logpath.size() );
                 if ( logpath[0] != '/' ) {
                     logpath = cmdLine.cwd + "/" + logpath;
                 }
@@ -359,12 +369,12 @@ namespace mongo {
         }
         
         if (params.count("syslog")) {
-            StringBuilder sb(128);
+            StringBuilder sb;
             sb << cmdLine.binaryName << "." << cmdLine.port;
             Logstream::useSyslog( sb.str().c_str() );
         }
 #endif
-        if (params.count("logpath")) {
+        if (params.count("logpath") && !params.count("shutdown")) {
             if ( params.count("syslog") ) {
                 cout << "Cant use both a logpath and syslog " << endl;
                 ::exit(-1);
@@ -412,8 +422,7 @@ namespace mongo {
             cmdLine.sslServerManager = new SSLManager( false );
             cmdLine.sslServerManager->setupPEM( cmdLine.sslPEMKeyFile , cmdLine.sslPEMKeyPassword );
         }
-
-        if ( cmdLine.sslPEMKeyFile.size() || cmdLine.sslPEMKeyPassword.size() ) {
+        else if ( cmdLine.sslPEMKeyFile.size() || cmdLine.sslPEMKeyPassword.size() ) {
             log() << "need to enable sslOnNormalPorts" << endl;
             dbexit(EXIT_BADOPTIONS);
         }
@@ -430,8 +439,14 @@ namespace mongo {
                     if (type == typeid(string)){
                         if (value.as<string>().empty())
                             b.appendBool(key, true); // boost po uses empty string for flags like --quiet
-                        else
-                            b.append(key, value.as<string>());
+                        else {
+                            if ( key == "servicePassword" ) {
+                                b.append( key, "<password>" );
+                            }
+                            else {
+                                b.append( key, value.as<string>() );
+                            }
+                        }
                     }
                     else if (type == typeid(int))
                         b.append(key, value.as<int>());
@@ -472,8 +487,8 @@ namespace mongo {
 
     void setupCoreSignals() {
 #if !defined(_WIN32)
-        assert( signal(SIGUSR1 , rotateLogs ) != SIG_ERR );
-        assert( signal(SIGHUP , ignoreSignal ) != SIG_ERR );
+        verify( signal(SIGUSR1 , rotateLogs ) != SIG_ERR );
+        verify( signal(SIGHUP , ignoreSignal ) != SIG_ERR );
 #endif
     }
 
@@ -494,7 +509,7 @@ namespace mongo {
     } cmdGetCmdLineOpts;
 
     string prettyHostName() {
-        StringBuilder s(128);
+        StringBuilder s;
         s << getHostNameCached();
         if( cmdLine.port != CmdLine::DefaultDBPort )
             s << ':' << mongo::cmdLine.port;

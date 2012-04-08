@@ -17,7 +17,6 @@
 
 #pragma once
 
-#include <boost/functional/hash.hpp>
 #include "../util/hex.h"
 
 namespace mongo {
@@ -42,7 +41,7 @@ namespace mongo {
         OID() : a(0), b(0) { }
 
         /** init from a 24 char hex string */
-        explicit OID(const string &s) { init(s); }
+        explicit OID(const std::string &s) { init(s); }
 
         /** initialize to 'null' */
         void clear() { a = 0; b = 0; }
@@ -56,8 +55,8 @@ namespace mongo {
         bool operator<=( const OID& other ) const { return compare( other ) <= 0; }
 
         /** @return the object ID output as 24 hex digits */
-        string str() const { return toHexLower(data, 12); }
-        string toString() const { return str(); }
+        std::string str() const { return toHexLower(data, 12); }
+        std::string toString() const { return str(); }
 
         static OID gen() { OID o; o.init(); return o; }
 
@@ -65,7 +64,7 @@ namespace mongo {
         void init();
 
         /** init from a 24 char hex string */
-        void init( string s );
+        void init( std::string s );
 
         /** Set to the min/max OID that could be generated at given timestamp. */
         void init( Date_t date, bool max=false );
@@ -75,10 +74,11 @@ namespace mongo {
 
         bool isSet() const { return a || b; }
 
-	void hash_combine(size_t &seed) const {
-	    boost::hash_combine(seed, a);
-	    boost::hash_combine(seed, b);
-	}
+        /**
+         * this is not consistent
+         * do not store on disk
+         */
+        void hash_combine(size_t &seed) const;
 
         /** call this after a fork to update the process id */
         static void justForked();
@@ -104,6 +104,14 @@ namespace mongo {
                 long long a;
                 unsigned b;
             };
+            struct {
+                // TODO: get rid of this eventually
+                //       this is a hack because of hash_combine with older versions of boost
+                //       on 32-bit platforms
+                int x;
+                int y;
+                int z;
+            };
             unsigned char data[12];
         };
 
@@ -113,7 +121,7 @@ namespace mongo {
     };
 #pragma pack()
 
-    ostream& operator<<( ostream &s, const OID &o );
+    std::ostream& operator<<( std::ostream &s, const OID &o );
     inline StringBuilder& operator<< (StringBuilder& s, const OID& o) { return (s << o.str()); }
 
     /** Formatting mode for generating JSON from BSON.
@@ -130,9 +138,6 @@ namespace mongo {
         JS
     };
 
-    inline ostream& operator<<( ostream &s, const OID &o ) {
-        s << o.str();
-        return s;
-    }
+     std::ostream& operator<<( std::ostream &s, const OID &o );
 
 }

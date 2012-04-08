@@ -38,6 +38,8 @@
 #include "../util/version.h"
 #include "../db/key.h"
 #include "../util/compress.h"
+#include "../util/concurrency/qlock.h"
+#include <boost/filesystem/operations.hpp>
 
 using namespace bson;
 
@@ -81,6 +83,7 @@ namespace PerfTests {
     DBClientType ClientBase::_client;
 
     // todo: use a couple threads. not a very good test yet.
+#if 0
     class TaskQueueTest {
         static int tot;
         struct V {
@@ -103,10 +106,11 @@ namespace PerfTests {
                 d.defer(v);
             }
             d.invoke();
-            assert( x == tot );
+            verify( x == tot );
         }
     };
     int TaskQueueTest::tot;
+#endif
 
     /* if you want recording of the timings, place the password for the perf database
         in ./../settings.py:
@@ -119,8 +123,8 @@ namespace PerfTests {
         DEV return;
 
         const char *fn = "../../settings.py";
-        if( !exists(fn) ) {
-            if( exists("settings.py") )
+        if( !boost::filesystem::exists(fn) ) {
+            if( boost::filesystem::exists("settings.py") )
                 fn = "settings.py";
             else {
                 cout << "no ../../settings.py or ./settings.py file found. will not write perf stats to pstats db." << endl;
@@ -151,7 +155,7 @@ namespace PerfTests {
                 if( c->connect("perfdb.10gen.cc", err) ) {
                     if( !c->auth("perf", "perf", pwd, err) ) {
                         cout << "info: authentication with stats db failed: " << err << endl;
-                        assert(false);
+                        verify(false);
                     }
                     conn = c;
 
@@ -171,7 +175,9 @@ namespace PerfTests {
                 }
             }
         }
-        catch(...) { }
+        catch(...) { 
+            cout << "pstatsConnect() didn't work; ignoring" << endl;
+        }
     }
 
 
@@ -234,7 +240,7 @@ namespace PerfTests {
                             BSONObj o = *i;
                             double lastrps = o["rps"].Number();
                             if( lastrps ) {
-                                cout << "stats " << setw(33) << right << "new/old:" << ' ' << setw(9);
+                                cout << "stats " << setw(42) << right << "new/old:" << ' ' << setw(9);
                                 cout << fixed << setprecision(2) << rps / lastrps;
                                 if( needver ) {
                                     cout << "         " << o.getFieldDotted("info.git").toString();
@@ -360,7 +366,7 @@ namespace PerfTests {
         void thread() {
 #if defined(_WIN32)
             static int z;
-            srand( ++z ^ time(0));
+            srand( ++z ^ (unsigned) time(0));
 #endif
             DBClientType c;
             Client::initThreadIfNotAlready("perftestthr");
@@ -387,7 +393,7 @@ namespace PerfTests {
         }
     };
 
-    unsigned dontOptimizeOutHopefully;
+    unsigned dontOptimizeOutHopefully = 1;
 
     class NonDurTest : public B {
     public:
@@ -463,8 +469,8 @@ namespace PerfTests {
           {}
         virtual bool showDurStats() { return false; }
         void timed() {
-            assert( a.woEqual(b) );
-            assert( !a.woEqual(c) );
+            verify( a.woEqual(b) );
+            verify( !a.woEqual(c) );
         }
     };
 
@@ -488,10 +494,22 @@ namespace PerfTests {
         virtual bool showDurStats() { return false; }
         void timed() {
             sleepmillis(0);
-            mongo::Timer t;
             aaa++;
         }
     };
+
+#if defined(__USE_XOPEN2K)
+    class Yield : public B {
+    public:
+        string name() { return "Yield"; }
+        virtual int howLongMillis() { return 400; }
+        virtual bool showDurStats() { return false; }
+        void timed() {
+            pthread_yield();
+            aaa++;
+        }
+    };
+#endif
 
     RWLock lk("testrw");
     SimpleMutex m("simptst");
@@ -556,6 +574,19 @@ namespace PerfTests {
         void timed() {
             lk.lock();
             lk.unlock();
+        }
+    };
+
+    QLock _qlock;
+
+    class qlock : public B {
+    public:
+        string name() { return "qlock"; }
+        //virtual int howLongMillis() { return 500; }
+        virtual bool showDurStats() { return false; }
+        void timed() {
+            _qlock.lock_r();
+            _qlock.unlock_r();
         }
     };
 
@@ -677,21 +708,62 @@ namespace PerfTests {
     public:
         TestException() : DBException("testexception",3) { }
     };
-
-    void foo_throws() { 
+    struct Z { 
+        Z() {  dontOptimizeOutHopefully--; }
+        ~Z() { dontOptimizeOutHopefully++; }
+    };
+    void thr1(int n) { 
         if( dontOptimizeOutHopefully ) { 
             throw TestException();
         }
         log() << "hmmm" << endl;
     }
-
+    void thr2(int n) { 
+        if( --n <= 0 ) {
+            if( dontOptimizeOutHopefully ) { 
+                throw TestException();
+            }
+            log() << "hmmm" << endl;
+        }
+        Z z;
+        try { 
+            thr2(n-1);
+        }
+        catch(DBException&) { 
+        }
+    }
+    void thr3(int n) { 
+        if( --n <= 0 ) {
+            if( dontOptimizeOutHopefully ) { 
+                throw TestException();
+            }
+            log() << "hmmm" << endl;
+        }
+        try { 
+            Z z;
+            thr3(n-1);
+        }
+        catch(DBException&) { 
+        }
+    }
+    void thr4(int n) { 
+        if( --n <= 0 ) {
+            if( dontOptimizeOutHopefully ) { 
+                throw TestException();
+            }
+            log() << "hmmm" << endl;
+        }
+        Z z;
+        thr4(n-1);
+    }
+    template< void T (int) >
     class Throw : public B {
     public:
         virtual int howLongMillis() { return 2000; }
         string name() { return "throw"; }
         void timed() {
             try { 
-                foo_throws();
+                T(10);
                 dontOptimizeOutHopefully += 2;
             }
             catch(DBException& e) {
@@ -709,7 +781,7 @@ namespace PerfTests {
         void timed() {
             char *p = new char[128];
             if( dontOptimizeOutHopefully++ > 0 )
-                delete p;
+                delete[] p;
         }
         virtual bool showDurStats() { return false; }
     };
@@ -721,7 +793,7 @@ namespace PerfTests {
         void timed() {
             char *p = new char[8];
             if( dontOptimizeOutHopefully++ > 0 )
-                delete p;
+                delete[] p;
         }
         virtual bool showDurStats() { return false; }
     };
@@ -835,7 +907,7 @@ namespace PerfTests {
             client().insert( ns(), o );
         }
         void post() {
-            assert( client().count(ns()) == 1 );
+            verify( client().count(ns()) == 1 );
         }
     };
 
@@ -844,7 +916,7 @@ namespace PerfTests {
         OID oid;
         BSONObj query;
     public:
-        virtual int howLongMillis() { return 30000; }
+        virtual int howLongMillis() { return profiling ? 30000 : 5000; }
         Insert1() : x( BSON("x" << 99) ) {
             oid.init();
             query = BSON("_id" << oid);
@@ -866,7 +938,7 @@ namespace PerfTests {
         }
         void post() {
 #if !defined(_DEBUG)
-            assert( client().count(ns()) > 50 );
+            verify( client().count(ns()) > 50 );
 #endif
         }
     };
@@ -954,10 +1026,10 @@ namespace PerfTests {
             string fn = "/tmp/t1";
             MongoMMF f;
             unsigned long long len = 1 * 1024 * 1024;
-            assert( f.create(fn, len, /*sequential*/rand()%2==0) );
+            verify( f.create(fn, len, /*sequential*/rand()%2==0) );
             {
                 char *p = (char *) f.getView();
-                assert(p);
+                verify(p);
                 // write something to the private view as a test
                 strcpy(p, "hello");
             }
@@ -984,7 +1056,7 @@ namespace PerfTests {
         void setupTests() {
             pstatsConnect();
             cout
-                << "stats test                                            rps------  time-- "
+                << "stats test                                       rps------  time-- "
                 << dur::stats.curr->_CSVHeader() << endl;
             if( profiling ) {
                 add< New8 >();
@@ -1000,11 +1072,18 @@ namespace PerfTests {
 #endif
                 add< New8 >();
                 add< New128 >();
-                add< Throw >();
+                add< Throw< thr1 > >();
+                add< Throw< thr2 > >();
+                add< Throw< thr3 > >();
+                add< Throw< thr4 > >();
                 add< Timer >();
                 add< Sleep0Ms >();
+#if defined(__USE_XOPEN2K)
+                add< Yield >();
+#endif
                 add< rlock >();
                 add< wlock >();
+                add< qlock >();
                 //add< ulock >();
                 add< mutexspeed >();
                 add< simplemutexspeed >();
@@ -1019,7 +1098,7 @@ namespace PerfTests {
                 add< BSONIter >();
                 add< BSONGetFields1 >();
                 add< BSONGetFields2 >();
-                add< TaskQueueTest >();
+                //add< TaskQueueTest >();
                 add< InsertDup >();
                 add< Insert1 >();
                 add< InsertRandom >();

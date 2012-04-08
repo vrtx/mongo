@@ -32,6 +32,8 @@ using namespace bson;
 
 namespace mongo {
 
+    mongo::mutex ReplSetConfig::groupMx("RS tag group");
+
     void logOpInitiate(const bo&);
 
     void assertOnlyHas(BSONObj o, const set<string>& fields) {
@@ -93,10 +95,11 @@ namespace mongo {
         return b.obj();
     }
 
-    void ReplSetConfig::updateMembers(List1<Member> &dest) {
-        for (vector<MemberCfg>::iterator source = members.begin(); source < members.end(); source++) {
+    void ReplSetConfig::updateMembers(List1<Member> &dest) const {
+        for (vector<MemberCfg>::const_iterator source = members.begin(); source < members.end(); source++) {
             for( Member *d = dest.head(); d; d = d->next() ) {
                 if (d->fullName() == (*source).h.toString()) {
+                    scoped_lock lk(groupMx);
                     d->configw().groupsw() = (*source).groups();
                 }
             }
@@ -231,7 +234,7 @@ namespace mongo {
         */
     /*static*/
     bool ReplSetConfig::legalChange(const ReplSetConfig& o, const ReplSetConfig& n, string& errmsg) {
-        assert( theReplSet );
+        verify( theReplSet );
 
         if( o._id != n._id ) {
             errmsg = "set name may not change";
@@ -420,6 +423,7 @@ namespace mongo {
                         }
                     }
 
+                    scoped_lock lk(groupMx);
                     for (set<MemberCfg *>::iterator cfg = (*sgs).second->m.begin();
                          !foundMe && cfg != (*sgs).second->m.end(); cfg++) {
                         (*cfg)->groupsw().insert((*sgs).second);
@@ -563,7 +567,9 @@ namespace mongo {
         uassert(13122, "bad repl set config?", expr);
     }
 
-    ReplSetConfig::ReplSetConfig(BSONObj cfg, bool force) {
+    ReplSetConfig::ReplSetConfig(BSONObj cfg, bool force) :
+        _ok(false),_majority(-1)
+    {
         _constructed = false;
         clear();
         from(cfg);
@@ -577,7 +583,9 @@ namespace mongo {
         _constructed = true;
     }
 
-    ReplSetConfig::ReplSetConfig(const HostAndPort& h) {
+    ReplSetConfig::ReplSetConfig(const HostAndPort& h) :
+      _ok(false),_majority(-1)
+    {
         LOG(2) << "ReplSetConfig load " << h.toStringLong() << rsLog;
 
         _constructed = false;

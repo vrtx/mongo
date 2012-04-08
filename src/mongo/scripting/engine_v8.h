@@ -53,6 +53,7 @@ namespace mongo {
             bool _lock;
         };
     } // namespace v8Locks
+
     class V8Lock {
         public:
         V8Lock() : _preemptionLock(Isolate::GetCurrent()){}
@@ -61,6 +62,7 @@ namespace mongo {
         v8Locks::RecursiveLock _noPreemptionLock;
         v8::Locker _preemptionLock;
     };
+
     struct V8Unlock {
         public:
         V8Unlock() : _preemptionUnlock(Isolate::GetCurrent()){}
@@ -68,6 +70,24 @@ namespace mongo {
         private:
         v8::Unlocker _preemptionUnlock;
         v8Locks::RecursiveUnlock _noPreemptionUnlock;
+    };
+
+    class BSONHolder {
+    public:
+
+        BSONHolder( BSONObj obj ) {
+            _obj = obj.getOwned();
+            _modified = false;
+        }
+
+        ~BSONHolder() {
+        }
+
+        BSONObj _obj;
+        bool _modified;
+        list<string> _extra;
+        set<string> _removed;
+
     };
 
     class V8Scope : public Scope {
@@ -133,7 +153,7 @@ namespace mongo {
         v8::Function * getObjectIdCons();
         Local< v8::Value > newId( const OID &id );
 
-        Persistent<v8::Object> wrapBSONObject(Local<v8::Object> obj, BSONObj* data);
+        Persistent<v8::Object> wrapBSONObject(Local<v8::Object> obj, BSONHolder* data);
         Persistent<v8::Object> wrapArrayObject(Local<v8::Object> obj, char* data);
 
         v8::Handle<v8::String> getV8Str(string str);
@@ -171,8 +191,8 @@ namespace mongo {
         Handle<v8::String> V8STR_BINDATA;
         Handle<v8::String> V8STR_WRAPPER;
         Handle<v8::String> V8STR_RO;
-        Handle<v8::String> V8STR_MODIFIED;
         Handle<v8::String> V8STR_FULLNAME;
+        Handle<v8::String> V8STR_BSON;
 
     private:
         void _startCall();
@@ -201,6 +221,7 @@ namespace mongo {
 
         std::map <string, v8::Persistent <v8::String> > _strCache;
 
+        Persistent<v8::FunctionTemplate> lzFunctionTemplate;
         Persistent<v8::ObjectTemplate> lzObjectTemplate;
         Persistent<v8::ObjectTemplate> roObjectTemplate;
         Persistent<v8::ObjectTemplate> lzArrayTemplate;
@@ -220,7 +241,7 @@ namespace mongo {
         bool utf8Ok() const { return true; }
 
         class V8UnlockForClient : public Unlocker {
-            V8Unlock u_;
+//            V8Unlock u_;
         };
 
         virtual auto_ptr<Unlocker> newThreadUnlocker() { return auto_ptr< Unlocker >( new V8UnlockForClient ); }

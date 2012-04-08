@@ -21,7 +21,7 @@
 
 #include <iostream>
 
-#include "client/dbclient.h"
+#include "mongo/client/dbclient.h"
 
 using namespace std;
 
@@ -81,6 +81,5 @@ int main( int argc, const char **argv ) {
         mongo::BSONObj res = conn.findOne( "test.people" , query.obj() );
         cout << res.isEmpty() << "\t" << res.jsonString() << endl;
     }
-
 
 }

@@ -10,10 +10,15 @@ namespace mongo {
     class DatabaseHolder {
         typedef map<string,Database*> DBs;
         typedef map<string,DBs> Paths;
+        // todo: we want something faster than this if called a lot:
+        mutable SimpleMutex _m;
+        Paths _paths;
+        int _size;
     public:
-        DatabaseHolder() : _size(0) { }
+        DatabaseHolder() : _m("dbholder"),_size(0) { }
 
         bool __isLoaded( const string& ns , const string& path ) const {
+            SimpleMutex::scoped_lock lk(_m);
             Paths::const_iterator x = _paths.find( path );
             if ( x == _paths.end() )
                 return false;
@@ -32,7 +37,8 @@ namespace mongo {
         }
 
         Database * get( const string& ns , const string& path ) const {
-            d.dbMutex.assertAtLeastReadLocked();
+            SimpleMutex::scoped_lock lk(_m);
+            Lock::assertAtLeastReadLocked(ns);
             Paths::const_iterator x = _paths.find( path );
             if ( x == _paths.end() )
                 return 0;
@@ -44,23 +50,11 @@ namespace mongo {
             return 0;
         }
 
-        void _put( const string& ns , const string& path , Database * db ) {
-            d.dbMutex.assertAtLeastReadLocked();
-            DBs& m = _paths[path];
-            Database*& d = m[_todb(ns)];
-            if( d ) {
-                dlog(2) << "info dbholder put db was already set " << ns << endl;
-            }
-            else {
-                _size++;
-            }
-            d = db;
-        }
-
         Database* getOrCreate( const string& ns , const string& path , bool& justCreated );
 
         void erase( const string& ns , const string& path ) {
-            d.dbMutex.assertWriteLocked(); // write lock req'd as a Database obj can be in use dbHolderMutex is mainly just to control the holder itself
+            SimpleMutex::scoped_lock lk(_m);
+            d.dbMutex.assertWriteLocked();
             DBs& m = _paths[path];
             _size -= (int)m.erase( _todb( ns ) );
         }
@@ -71,21 +65,11 @@ namespace mongo {
         // "info" as this is informational only could change on you if you are not write locked
         int sizeInfo() const { return _size; }
 
-        void forEach(boost::function<void(Database *)> f) const {
-            d.dbMutex.assertWriteLocked();
-            for ( Paths::const_iterator i=_paths.begin(); i!=_paths.end(); i++ ) {
-                DBs m = i->second;
-                for( DBs::const_iterator j=m.begin(); j!=m.end(); j++ ) {
-                    f(j->second);
-                }
-            }
-        }
-
         /**
          * gets all unique db names, ignoring paths
          */
         void getAllShortNames( bool locked, set<string>& all ) const {
-            d.dbMutex.assertAtLeastReadLocked();
+            SimpleMutex::scoped_lock lk(_m);
             for ( Paths::const_iterator i=_paths.begin(); i!=_paths.end(); i++ ) {
                 DBs m = i->second;
                 for( DBs::const_iterator j=m.begin(); j!=m.end(); j++ ) {
@@ -109,13 +93,11 @@ namespace mongo {
             uassert( 13075 , "db name can't be empty" , i > 0 );
             return ns.substr( 0 , i );
         }
-        Paths _paths;
-        int _size;
     };
 
     DatabaseHolder& dbHolderUnchecked();
     inline const DatabaseHolder& dbHolder() { 
-        dassert( d.dbMutex.atLeastReadLocked() );
+        dassert( Lock::isLocked() );
         return dbHolderUnchecked();
     }
     inline DatabaseHolder& dbHolderW() { 

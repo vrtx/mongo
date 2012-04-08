@@ -29,8 +29,6 @@
 #include <boost/spirit/utility/loops.hpp>
 #include <boost/spirit/utility/lists.hpp>
 #endif
-#undef assert
-#define assert MONGO_assert
 
 #include "json.h"
 #include "../bson/util/builder.h"
@@ -44,15 +42,17 @@ namespace mongo {
 
     struct ObjectBuilder : boost::noncopyable {
         ~ObjectBuilder() {
-            unsigned i = builders.size();
-            if ( i ) {
-                i--;
-                for ( ; i>=1; i-- ) {
-                    if ( builders[i] ) {
-                        builders[i]->done();
+            DESTRUCTOR_GUARD(
+                unsigned i = builders.size();
+                if ( i ) {
+                    i--;
+                    for ( ; i>=1; i-- ) {
+                        if ( builders[i] ) {
+                            builders[i]->done();
+                        }
                     }
                 }
-            }
+            );
         }
         BSONObjBuilder *back() {
             return builders.back().get();
@@ -189,7 +189,7 @@ namespace mongo {
                 o = '\v';
                 break;
             default:
-                assert( false );
+                verify( false );
             }
             b.ss << o;
         }
@@ -640,7 +640,7 @@ namespace mongo {
             msgasserted(10340, "Failure parsing JSON string near: " + string( result.stop, limit ));
         }
         BSONObj ret = b.pop();
-        assert( b.empty() );
+        verify( b.empty() );
         return ret;
     }
 

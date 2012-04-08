@@ -17,11 +17,15 @@
 
 #pragma once
 
-#include "../pch.h"
-#include "../util/net/message.h"
-#include "../db/jsobj.h"
-#include "../db/json.h"
+#include "pch.h"
+
 #include <stack>
+
+#include "mongo/client/dbclientinterface.h"
+#include "mongo/db/jsobj.h"
+#include "mongo/db/json.h"
+#include "mongo/util/assert_util.h"
+#include "mongo/util/net/message.h"
 
 namespace mongo {
 
@@ -138,6 +142,7 @@ namespace mongo {
             cursorId(),
             _ownCursor( true ),
             wasError( false ) {
+            _finishConsInit();
         }
 
         DBClientCursor( DBClientBase* client, const string &_ns, long long _cursorId, int _nToReturn, int options ) :
@@ -148,6 +153,7 @@ namespace mongo {
             opts( options ),
             cursorId(_cursorId),
             _ownCursor( true ) {
+            _finishConsInit();
         }
 
         virtual ~DBClientCursor();
@@ -160,6 +166,8 @@ namespace mongo {
         void decouple() { _ownCursor = false; }
 
         void attach( AScopedConnection * conn );
+
+        string originalHost() const { return _originalHost; }
 
         Message* getMessage(){ return batch.m.get(); }
 
@@ -186,9 +194,11 @@ namespace mongo {
         friend class DBClientConnection;
 
         int nextBatchSize();
+        void _finishConsInit();
         
         Batch batch;
         DBClientBase* _client;
+        string _originalHost;
         string ns;
         BSONObj query;
         int nToReturn;

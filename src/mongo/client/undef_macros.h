@@ -26,16 +26,16 @@
 #if !defined(MONGO_EXPOSE_MACROS) && !defined(MONGO_MACROS_CLEANED)
 
 // util/allocator.h
-#undef malloc
+#pragma pop_macro("malloc")
+//#undef malloc
 #undef realloc
 
 // util/assert_util.h
-#undef assert
 #undef dassert
 #undef wassert
 #undef massert
 #undef uassert
-#undef BOOST_CHECK_EXCEPTION
+#undef verify
 #undef DESTRUCTOR_GUARD
 
 // util/goodies.h

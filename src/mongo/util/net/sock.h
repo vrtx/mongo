@@ -20,10 +20,6 @@
 #include "../../pch.h"
 
 #include <stdio.h>
-#include <sstream>
-#include "../goodies.h"
-#include "../../db/cmdline.h"
-#include "../mongoutils/str.h"
 
 #ifndef _WIN32
 
@@ -68,9 +64,7 @@ namespace mongo {
 
 #endif // _WIN32
 
-    inline string makeUnixSockPath(int port) {
-        return mongoutils::str::stream() << cmdLine.socket << "/mongodb-" << port << ".sock";
-    }
+    string makeUnixSockPath(int port);
 
     // If an ip address is passed in, just return that.  If a hostname is passed
     // in, look up its ip and return that.  Returns "" on failure.
@@ -177,7 +171,7 @@ namespace mongo {
      * thin wrapped around file descriptor and system calls
      * todo: ssl
      */
-    class Socket {
+    class Socket : boost::noncopyable {
     public:
         Socket(int sock, const SockAddr& farEnd);
 
@@ -188,6 +182,10 @@ namespace mongo {
             Generally you don't want a timeout, you should be very prepared for errors if you set one.
         */
         Socket(double so_timeout = 0, int logLevel = 0 );
+
+        ~Socket() {
+            close();
+        }
 
         bool connect(SockAddr& farEnd);
         void close();
@@ -248,11 +246,9 @@ namespace mongo {
         long long _bytesOut;
 
 #ifdef MONGO_SSL
-        shared_ptr<SSL> _ssl;
+        SSL* _ssl;
         SSLManager * _sslAccepted;
 #endif
-
-    protected:
         int _logLevel; // passed to log() when logging errors
 
     };

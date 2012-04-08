@@ -16,11 +16,14 @@
  */
 
 #include "pch.h"
+
+#include <boost/smart_ptr.hpp>
 #include <fcntl.h>
+#include <fstream>
 #include <utility>
 
-#include "gridfs.h"
-#include <boost/smart_ptr.hpp>
+#include "mongo/client/gridfs.h"
+#include "mongo/client/dbclientcursor.h"
 
 #if defined(_WIN32)
 #include <io.h>
@@ -29,6 +32,8 @@
 #ifndef MIN
 #define MIN(a,b) ( (a) < (b) ? (a) : (b) )
 #endif
+
+#include <boost/filesystem/operations.hpp>
 
 namespace mongo {
 
@@ -112,7 +117,7 @@ namespace mongo {
                 chunkLen += readLen;
                 bufPos += readLen;
 
-                assert(chunkLen <= _chunkSize);
+                verify(chunkLen <= _chunkSize);
             }
 
             GridFSChunk c(idObj, chunkNumber, buf, chunkLen);

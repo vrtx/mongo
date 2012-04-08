@@ -20,13 +20,26 @@
 #include "util/atomic_int.h"
 #include "../db/nonce.h"
 #include "bsonobjbuilder.h"
+#include <boost/functional/hash.hpp>
+#define verify MONGO_verify
 
 BOOST_STATIC_ASSERT( sizeof(mongo::OID) == 12 );
 
 namespace mongo {
 
+	void OID::hash_combine(size_t &seed) const {
+	    boost::hash_combine(seed, x);
+	    boost::hash_combine(seed, y);
+	    boost::hash_combine(seed, z);
+	}
+
     // machine # before folding in the process id
     OID::MachineAndPid OID::ourMachine;
+
+    ostream& operator<<( ostream &s, const OID &o ) {
+        s << o.str();
+        return s;
+    }
 
     unsigned OID::ourPid() {
         unsigned pid;
@@ -57,7 +70,7 @@ namespace mongo {
             nonce64 a = Security::getNonceDuringInit();
             nonce64 b = Security::getNonceDuringInit();
             nonce64 c = Security::getNonceDuringInit();
-            assert( !(a==b && b==c) );
+            verify( !(a==b && b==c) );
         }
 
         unsigned long long n = Security::getNonceDuringInit();
@@ -92,7 +105,7 @@ namespace mongo {
         // xor in the pid into _pid.  this reduces the probability of collisions.
         foldInPid(x);
         ourMachineAndPid = genMachineAndPid();
-        assert( x != ourMachineAndPid );
+        verify( x != ourMachineAndPid );
         ourMachineAndPid = x;
     }
 
@@ -120,7 +133,7 @@ namespace mongo {
     }
 
     void OID::init( string s ) {
-        assert( s.size() == 24 );
+        verify( s.size() == 24 );
         const char *p = s.c_str();
         for( int i = 0; i < 12; i++ ) {
             data[i] = fromHex(p);

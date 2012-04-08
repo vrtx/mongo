@@ -49,8 +49,8 @@ connectionURLTheSame = function( a , b ){
         return a[0] == b[0]
     }
     else {
-        a0 = a.split( "/" )[0]
-        b0 = b.split( "/" )[0]
+        var a0 = a.split( "/" )[0]
+        var b0 = b.split( "/" )[0]
         return a0 == b0
     }
 }
@@ -125,7 +125,7 @@ MongoRunner.toRealPath = function( path, pathOpts ){
     path = path.replace( /\$dataPath/g, MongoRunner.dataPath )
     path = path.replace( /\$dataDir/g, MongoRunner.dataDir )
     for( key in pathOpts ){
-        path = path.replace( RegExp( "\\$" + key, "g" ), pathOpts[ key ] )
+        path = path.replace( RegExp( "\\$" + RegExp.escape(key), "g" ), pathOpts[ key ] )
     }
     
     // Relative path
@@ -543,6 +543,8 @@ myPort = function() {
  */
 ShardingTest = function( testName , numShards , verboseLevel , numMongos , otherParams ){
     
+    this._startTime = new Date();
+
     // Check if testName is an object, if so, pull params from there
     var keyFile = undefined
     otherParams = Object.merge( otherParams || {}, {} )
@@ -738,7 +740,7 @@ ShardingTest = function( testName , numShards , verboseLevel , numMongos , other
             
             var options = { useHostname : otherParams.useHostname, 
                             noJournalPrealloc : otherParams.nopreallocj, 
-                            port : 40000 + i,
+                            port : 29000 + i,
                             pathOpts : Object.merge( pathOpts, { config : i } ),
                             dbpath : "$testName-config$config",
                             keyFile : keyFile
@@ -962,7 +964,9 @@ ShardingTest.prototype.stop = function(){
         }
     }
 
-    print('*** ShardingTest ' + this._testName + " completed successfully ***");
+    var timeMillis = new Date().getTime() - this._startTime.getTime();
+
+    print('*** ShardingTest ' + this._testName + " completed successfully in " + ( timeMillis / 1000 ) + " seconds ***");
 }
 
 ShardingTest.prototype.adminCommand = function(cmd){
@@ -1073,12 +1077,14 @@ printShardingStatus = function( configDB , verbose ){
             output( "\t" + tojsononeline(db,"",true) );
         
             if (db.partitioned){
-                configDB.collections.find( { _id : new RegExp( "^" + db._id + "\\." ) } ).sort( { _id : 1 } ).forEach(
-                    function( coll ){
+                configDB.collections.find( { _id : new RegExp( "^" +
+                    RegExp.escape(db._id) + "\\." ) } ).
+                    sort( { _id : 1 } ).forEach( function( coll ){
                         if ( coll.dropped == false ){
                             output("\t\t" + coll._id + " chunks:");
                             
-                            res = configDB.chunks.group( { cond : { ns : coll._id } , key : { shard : 1 }  , reduce : function( doc , out ){ out.nChunks++; } , initial : { nChunks : 0 } } );
+                            res = configDB.chunks.group( { cond : { ns : coll._id } , key : { shard : 1 },
+                                reduce : function( doc , out ){ out.nChunks++; } , initial : { nChunks : 0 } } );
                             var totalChunks = 0;
                             res.forEach( function(z){
                                 totalChunks += z.nChunks;
@@ -1139,8 +1145,9 @@ printShardingSizes = function(){
             output( "\t" + tojson(db,"",true) );
         
             if (db.partitioned){
-                configDB.collections.find( { _id : new RegExp( "^" + db._id + "\." ) } ).sort( { _id : 1 } ).forEach(
-                    function( coll ){
+                configDB.collections.find( { _id : new RegExp( "^" +
+                    RegExp.escape(db._id) + "\." ) } ).
+                    sort( { _id : 1 } ).forEach( function( coll ){
                         output("\t\t" + coll._id + " chunks:");
                         configDB.chunks.find( { "ns" : coll._id } ).sort( { min : 1 } ).forEach( 
                             function(chunk){
@@ -2078,7 +2085,7 @@ ReplSetTest.prototype.reInitiate = function() {
 
 ReplSetTest.prototype.getLastOpTimeWritten = function() {
     this.getMaster();
-    jsTest.attempt({context : this, desc : "awaiting oplog query"},
+    jsTest.attempt({context : this, desc : "awaiting oplog query", timeout: 30000},
                  function() {
                      try {
                          this.latest = this.liveNodes.master.getDB("local")['oplog.rs'].find({}).sort({'$natural': -1}).limit(1).next()['ts'];
@@ -2128,6 +2135,7 @@ ReplSetTest.prototype.awaitReplication = function(timeout) {
                                  synced = (synced && friendlyEqual(this.latest,ts))
                              }
                              else {
+                                 print( "ReplSetTest waiting for " + slave + " to have an oplog built." )
                                  synced = false;
                              }
                          }
@@ -2326,13 +2334,23 @@ ReplSetTest.prototype.stopSet = function( signal , forRestart ) {
     for(i=0; i < this.ports.length; i++) {
         this.stop( i, signal );
     }
-    if ( ! forRestart && this._alldbpaths ){
+    if ( forRestart ) { return; }
+    if ( this._alldbpaths ){
         print("ReplSetTest stopSet deleting all dbpaths");
         for( i=0; i<this._alldbpaths.length; i++ ){
             resetDbpath( this._alldbpaths[i] );
         }
     }
-
+    if ( this.bridges ) {
+        var mybridgevec;
+        while (mybridgevec = this.bridges.pop()) {
+            var mybridge;
+            while (mybridge = mybridgevec.pop()) {
+                mybridge.stop();
+            }       
+        }
+    }
+    
     print('ReplSetTest stopSet *** Shut down repl set - test worked ****' )
 };
 
@@ -2610,7 +2628,7 @@ ReplSetBridge.prototype.start = function() {
 
 ReplSetBridge.prototype.stop = function() {
     print("ReplSetBridge stopping: " + this.port);
-    stopMongod(this.port);
+    stopMongod(this.port, 9);
 };
 
 ReplSetBridge.prototype.toString = function() {

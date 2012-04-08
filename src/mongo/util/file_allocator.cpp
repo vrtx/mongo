@@ -23,6 +23,10 @@
 #include <sys/stat.h>
 #endif
 
+#if defined(__linux__)
+#include <sys/vfs.h>
+#endif
+
 #include "timer.h"
 #include "mongoutils/str.h"
 using namespace mongoutils;
@@ -33,6 +37,8 @@ using namespace mongoutils;
 
 #include "file_allocator.h"
 #include "paths.h"
+
+#include <boost/filesystem/operations.hpp>
 
 namespace mongo {
 
@@ -46,7 +52,7 @@ namespace mongo {
             flushMyDirectory(parent); // flushes grandparent to ensure parent exists after crash
         }
         
-        assert(boost::filesystem::is_directory(parent));
+        verify(boost::filesystem::is_directory(parent));
         return parent;
     }
 
@@ -140,7 +146,35 @@ namespace mongo {
             _pendingUpdated.wait( lk.boost() );
     }
 
+    // TODO: pull this out to per-OS files once they exist
+    static bool useSparseFiles(int fd) {
+#if defined(__linux__)
+// these are from <linux/magic.h> but that isn't available on all systems
+# define NFS_SUPER_MAGIC 0x6969
+
+        struct statfs fs_stats;
+        int ret = fstatfs(fd, &fs_stats);
+        uassert(16062, "fstatfs failed: " + errnoWithDescription(), ret == 0);
+
+        return (fs_stats.f_type == NFS_SUPER_MAGIC);
+
+#elif defined(__freebsd__) || defined(__sunos__)
+        // assume using ZFS which is copy-on-write so no benefit to zero-filling
+        // TODO: check which fs we are using like we do on linux
+        return true;
+#else
+        return false;
+#endif
+    }
+
     void FileAllocator::ensureLength(int fd , long size) {
+        if (useSparseFiles(fd)) {
+            log(1) << "using ftruncate to create a sparse file" << endl;
+            int ret = ftruncate(fd, size);
+            uassert(16063, "ftruncate failed: " + errnoWithDescription(), ret == 0);
+            return;
+        }
+
 #if defined(__linux__)
         int ret = posix_fallocate(fd,0,size);
         if ( ret == 0 )
@@ -208,9 +242,9 @@ namespace mongo {
         return false;
     }
 
-    string makeTempFileName( path root ) {
+    string makeTempFileName( boost::filesystem::path root ) {
         while( 1 ) {
-            path p = root / "_tmp";
+            boost::filesystem::path p = root / "_tmp";
             stringstream ss;
             ss << (unsigned) rand();
             p /= ss.str();
@@ -291,8 +325,8 @@ namespace mongo {
                     log() << "    will try again in 10 seconds" << endl; // not going to warning logs
                     try {
                         if ( tmp.size() )
-                            BOOST_CHECK_EXCEPTION( boost::filesystem::remove( tmp ) );
-                        BOOST_CHECK_EXCEPTION( boost::filesystem::remove( name ) );
+                            MONGO_ASSERT_ON_EXCEPTION( boost::filesystem::remove( tmp ) );
+                        MONGO_ASSERT_ON_EXCEPTION( boost::filesystem::remove( name ) );
                     }
                     catch ( ... ) {
                     }

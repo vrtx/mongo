@@ -18,7 +18,7 @@
 
 #include "pch.h"
 #include "delete.h"
-#include "../queryoptimizer.h"
+#include "../queryutil.h"
 #include "../oplog.h"
 
 namespace mongo {
@@ -52,7 +52,7 @@ namespace mongo {
 
         long long nDeleted = 0;
 
-        shared_ptr< Cursor > creal = NamespaceDetailsTransient::getCursor( ns, pattern, BSONObj(), false, 0 );
+        shared_ptr< Cursor > creal = NamespaceDetailsTransient::getCursor( ns, pattern );
 
         if( !creal->ok() )
             return nDeleted;
@@ -88,7 +88,7 @@ namespace mongo {
                 break; // if we yielded, could have hit the end
             }
 
-            // this way we can avoid calling updateLocation() every time (expensive)
+            // this way we can avoid calling prepareToYield() every time (expensive)
             // as well as some other nuances handled
             cc->setDoingDeletes( true );
 
@@ -104,7 +104,7 @@ namespace mongo {
             if ( ! match )
                 continue;
 
-            assert( !dup ); // can't be a dup, we deleted it!
+            verify( !dup ); // can't be a dup, we deleted it!
 
             if ( !justOne ) {
                 /* NOTE: this is SLOW.  this is not good, noteLocation() was designed to be called across getMore

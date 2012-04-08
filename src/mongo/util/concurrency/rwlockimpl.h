@@ -2,12 +2,21 @@
 
 #pragma once
 
-#if defined(MONGO_USE_SRW_ON_WINDOWS) && defined(_WIN32)
+#include "mutex.h"
+
+#if defined(RWLOCK_TEST)
+namespace mongo { 
+    typedef RWLockBase1 RWLockBase;
+}
+#elif defined(MONGO_USE_SRW_ON_WINDOWS) && defined(_WIN32)
 
 // windows slimreaderwriter version.  newer windows versions only
 
-namespace mongo { 
+namespace mongo {
+    unsigned long long curTimeMicros64();
+
     class RWLockBase : boost::noncopyable {
+        friend class SimpleRWLock;
         SRWLOCK _lock;
     protected:
         RWLockBase() { InitializeSRWLock(&_lock); }
@@ -57,6 +66,9 @@ namespace mongo {
 
 #elif( BOOST_VERSION < 103500 ) 
 
+# if !defined(BOOST_VERSION)
+#  error BOOST_VERSION is not defined 
+# endif
 # if defined(_WIN32)
 #  error need boost >= 1.35 for windows
 # endif
@@ -64,27 +76,24 @@ namespace mongo {
 // pthreads version
 
 # include <pthread.h>
+# include <errno.h>
 
 namespace mongo { 
     class RWLockBase : boost::noncopyable {
+        friend class SimpleRWLock;
         pthread_rwlock_t _lock;
         static void check( int x ) {
-            if( x == 0 ) return;
-            log() << "pthread rwlock failed: " << x << endl;
-            assert( x == 0 );
+            verify( x == 0 );
         }        
-
+    protected:
         ~RWLockBase() {
             if ( ! StaticObserver::_destroyingStatics ) {
                 wassert( pthread_rwlock_destroy( &_lock ) == 0 ); // wassert as don't want to throw from a destructor
             }
         }
-
-    protected:
         RWLockBase() {
             check( pthread_rwlock_init( &_lock , 0 ) );
         }
-
         void lock() { check( pthread_rwlock_wrlock( &_lock ) ); }
         void unlock() { check( pthread_rwlock_unlock( &_lock ) ); }
         void lock_shared() { check( pthread_rwlock_rdlock( &_lock ) ); }
@@ -128,11 +137,10 @@ namespace mongo { typedef boost::modified_shared_mutex shared_mutex; }
 #  include <boost/thread/shared_mutex.hpp>
 namespace mongo { using boost::shared_mutex; }
 # endif
-# undef assert
-# define assert MONGO_assert
 
 namespace mongo { 
     class RWLockBase : boost::noncopyable {
+        friend class SimpleRWLock;
         shared_mutex _m;
     protected:
         void lock() {

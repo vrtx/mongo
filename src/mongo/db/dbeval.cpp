@@ -51,9 +51,9 @@ namespace mongo {
             code = e.codeWScopeCode();
             break;
         default:
-            assert(0);
+            verify(0);
         }
-        assert( code );
+        verify( code );
 
         if ( ! globalScriptEngine ) {
             errmsg = "db side execution is disabled";
@@ -106,6 +106,7 @@ namespace mongo {
         return true;
     }
 
+    // SERVER-4328 todo review for concurrency
     class CmdEval : public Command {
     public:
         virtual bool slaveOk() const {

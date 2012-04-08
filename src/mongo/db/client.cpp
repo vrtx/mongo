@@ -35,12 +35,13 @@
 #include "../util/file_allocator.h"
 #include "repl/rs.h"
 #include "../scripting/engine.h"
+#include "pagefault.h"
 
 namespace mongo {
   
     Client* Client::syncThread;
-    mongo::mutex Client::clientsMutex("clientsMutex");
-    set<Client*> Client::clients; // always be in clientsMutex when manipulating this
+    mongo::mutex& Client::clientsMutex = *(new mutex("clientsMutex"));
+    set<Client*>& Client::clients = *(new set<Client*>); // always be in clientsMutex when manipulating this
 
     TSP_DEFINE(Client, currentClient)
 
@@ -49,7 +50,7 @@ namespace mongo {
     ThreadLocalValue<StackChecker *> checker;
 
     struct StackChecker { 
-        enum { SZ = 256 * 1024 };
+        enum { SZ = 192 * 1024 };
         char buf[SZ];
         StackChecker() { 
             checker.set(this);
@@ -82,7 +83,7 @@ namespace mongo {
 #if defined _DEBUG
     static unsigned long long nThreads = 0;
     void assertStartingUp() { 
-        assert( nThreads <= 1 );
+        verify( nThreads <= 1 );
     }
 #else
     void assertStartingUp() { }
@@ -98,7 +99,7 @@ namespace mongo {
             }
         }
 #endif
-        assert( currentClient.get() == 0 );
+        verify( currentClient.get() == 0 );
         Client *c = new Client(desc, mp);
         currentClient.reset(c);
         mongo::lastError.initThread();
@@ -174,25 +175,25 @@ namespace mongo {
         _oldContext( _client->_context ),
         _path( mongo::dbpath ), // is this right? could be a different db? may need a dassert for this
         _justCreated(false),
+        _doVersion( true ),
         _ns( ns ), 
         _db(db)
     {
-        assert( db == 0 || db->isOk() );
+        verify( db == 0 || db->isOk() );
         _client->_context = this;
         checkNsAccess( doauth );
-        _client->checkLocks();
     }
 
-    Client::Context::Context(const string& ns, string path , bool doauth ) :
+    Client::Context::Context(const string& ns, string path , bool doauth, bool doVersion ) :
         _client( currentClient.get() ), 
         _oldContext( _client->_context ),
         _path( path ), 
         _justCreated(false), // set for real in finishInit
+        _doVersion(doVersion),
         _ns( ns ), 
         _db(0) 
     {
         _finishInit( doauth );
-        _client->checkLocks();
     }
        
     /** "read lock, and set my context, all in one operation" 
@@ -200,7 +201,7 @@ namespace mongo {
      */
     Client::ReadContext::ReadContext(const string& ns, string path, bool doauth ) {
         {
-            lk.reset( new _LockCollectionForReading(ns) );
+            lk.reset( new Lock::DBRead(ns) );
             Database *db = dbHolder().get(ns, path);
             if( db ) {
                 c.reset( new Context(path, ns, db, doauth) );
@@ -210,24 +211,23 @@ namespace mongo {
 
         // we usually don't get here, so doesn't matter how fast this part is
         {
-            int x = d.dbMutex.getState();
-            if( x > 0 ) { 
+            DEV log() << "_DEBUG ReadContext db wasn't open, will try to open " << ns << endl;
+            if( Lock::isW() ) { 
                 // write locked already
                 DEV RARELY log() << "write locked on ReadContext construction " << ns << endl;
                 c.reset( new Context(ns, path, doauth) );
             }
-            else if( x == -1 ) { 
+            else if( !Lock::nested() ) { 
                 lk.reset(0);
                 {
                     writelock w;
                     Context c(ns, path, doauth);
                 }
                 // db could be closed at this interim point -- that is ok, we will throw, and don't mind throwing.
-                lk.reset( new _LockCollectionForReading(ns) );
+                lk.reset( new Lock::DBRead(ns) );
                 c.reset( new Context(ns, path, doauth) );
             }
             else { 
-                assert( x < -1 );
                 uasserted(15928, str::stream() << "can't open a database from a nested read lock " << ns);
             }
         }
@@ -245,10 +245,12 @@ namespace mongo {
             break;
         default: {
             string errmsg;
-            if ( ! shardVersionOk( _ns , errmsg ) ) {
+            ShardChunkVersion received;
+            ShardChunkVersion wanted;
+            if ( ! shardVersionOk( _ns , errmsg, received, wanted ) ) {
                 ostringstream os;
                 os << "[" << _ns << "] shard version not ok in Client::Context: " << errmsg;
-                throw SendStaleConfigException( _ns, os.str() );
+                throw SendStaleConfigException( _ns, os.str(), received, wanted );
             }
         }
         }
@@ -260,33 +262,37 @@ namespace mongo {
         _oldContext( _client->_context ),
         _path( path ), 
         _justCreated(false),
+        _doVersion( true ),
         _ns( ns ), 
         _db(db)
     {
-        assert(_db);
+        verify(_db);
         checkNotStale();
         _client->_context = this;
         _client->_curOp->enter( this );
-        checkNsAccess( doauth, d.dbMutex.getState() );
-        _client->checkLocks();
+        checkNsAccess( doauth );
     }
        
     void Client::Context::_finishInit( bool doauth ) {
-        int lockState = d.dbMutex.getState();
-        assert( lockState );        
-        if ( lockState > 0 && FileAllocator::get()->hasFailed() ) {
+        dassert( Lock::isLocked() );
+        int writeLocked = Lock::somethingWriteLocked();
+        if ( writeLocked && FileAllocator::get()->hasFailed() ) {
             uassert(14031, "Can't take a write lock while out of disk space", false);
         }
         
         _db = dbHolderUnchecked().getOrCreate( _ns , _path , _justCreated );
-        assert(_db);
-        checkNotStale();
+        verify(_db);
+        if( _doVersion ) checkNotStale();
+        massert( 16107 , str::stream() << "Don't have a lock on: " << _ns , Lock::atLeastReadLocked( _ns ) );
         _client->_context = this;
         _client->_curOp->enter( this );
-        checkNsAccess( doauth, lockState );
+        checkNsAccess( doauth, writeLocked ? 1 : 0 );
     }
 
     void Client::Context::_auth( int lockState ) {
+        if (lockState <= 0 && str::endsWith(_ns, ".system.users"))
+            lockState = 1; // we don't want read-only users to be able to read system.users SERVER-4692
+
         if ( _client->_ai.isAuthorizedForLock( _db->name , lockState ) )
             return;
 
@@ -294,12 +300,12 @@ namespace mongo {
         _client->_context = _oldContext; // note: _oldContext may be null
 
         stringstream ss;
-        ss << "unauthorized db:" << _db->name << " lock type:" << lockState << " client:" << _client->clientAddress();
+        ss << "unauthorized db:" << _db->name << " ns:" << _ns << " lock type:" << lockState << " client:" << _client->clientAddress();
         uasserted( 10057 , ss.str() );
     }
     
     Client::Context::~Context() {
-        DEV assert( _client == currentClient.get() );
+        DEV verify( _client == currentClient.get() );
         _client->_curOp->leave( this );
         _client->_context = _oldContext; // note: _oldContext may be null
     }
@@ -325,6 +331,9 @@ namespace mongo {
         if ( doauth ) {
             _auth( lockState );
         }
+    }
+    void Client::Context::checkNsAccess( bool doauth ) {
+        checkNsAccess( doauth, Lock::somethingWriteLocked() ? 1 : 0 );
     }
 
     void Client::appendLastOp( BSONObjBuilder& b ) const {
@@ -354,17 +363,18 @@ namespace mongo {
         return c->toString();
     }
 
-    Client* curopWaitingForLock( int type ) {
+    Client* curopWaitingForLock( char type ) {
         Client * c = currentClient.get();
-        assert( c );
+        verify( c );
         CurOp * co = c->curop();
         if ( co ) {
             co->waitingForLock( type );
         }
         return c;
     }
+
     void curopGotLock(Client *c) {
-        assert(c);
+        verify(c);
         CurOp * co = c->curop();
         if ( co )
             co->gotLock();
@@ -412,7 +422,7 @@ namespace mongo {
 
         {
             BSONElement id = i.next();
-            assert( id.type() );
+            verify( id.type() );
             _remoteId = id.wrap( "_id" );
         }
 
@@ -482,11 +492,8 @@ namespace mongo {
                     tablecell( ss , co.opNum() );
                     tablecell( ss , co.active() );
                     {
-                        int lt = co.getLockType();
-                        if( lt == -1 ) tablecell(ss, "R");
-                        else if( lt == 1 ) tablecell(ss, "W");
-                        else
-                            tablecell( ss ,  lt);
+                        char lt = co.lockType();
+                        tablecell(ss, lt ? lt : ' ');
                     }
                     tablecell( ss , co.isWaitingForLock() );
                     if ( co.active() )
@@ -525,7 +532,8 @@ namespace mongo {
                 Client* c = *i;
                 if ( c->curop()->isWaitingForLock() ) {
                     num++;
-                    if ( c->curop()->getLockType() > 0 )
+                    char lt = c->curop()->lockType();
+                    if( lt == 'w' || lt == 'W' )
                         w++;
                     else
                         r++;
@@ -562,15 +570,21 @@ namespace mongo {
             if ( ! c->curop()->active() )
                 continue;
 
-            int l = c->curop()->getLockType();
-            if ( l > 0 )
+            char lt = c->curop()->lockType();
+            if ( lt == 'w' || lt == 'W' )
                 writers++;
-            else if ( l < 0 )
+            else if ( lt == 'r' || lt == 'R' )
                 readers++;
-
         }
 
         return writers + readers;
+    }
+
+    bool Client::allowedToThrowPageFaultException() const {
+        return 
+            _hasWrittenThisPass == false && 
+            _pageFaultRetryableSection != 0 && 
+            _pageFaultRetryableSection->laps() < 100; 
     }
 
     void OpDebug::reset() {
@@ -590,7 +604,8 @@ namespace mongo {
         nscanned = -1;
         idhack = false;
         scanAndOrder = false;
-        moved = false;
+        nupdated = -1;
+        nmoved = -1;
         fastmod = false;
         fastmodinsert = false;
         upsert = false;
@@ -607,7 +622,7 @@ namespace mongo {
 #define OPDEBUG_TOSTRING_HELP(x) if( x >= 0 ) s << " " #x ":" << (x)
 #define OPDEBUG_TOSTRING_HELP_BOOL(x) if( x ) s << " " #x ":" << (x)
     string OpDebug::toString() const {
-        StringBuilder s( ns.size() + 64 );
+        StringBuilder s;
         if ( iscommand )
             s << "command ";
         else
@@ -626,7 +641,7 @@ namespace mongo {
             s << " update: ";
             updateobj.toString( s );
         }
-        
+
         OPDEBUG_TOSTRING_HELP( cursorid );
         OPDEBUG_TOSTRING_HELP( ntoreturn );
         OPDEBUG_TOSTRING_HELP( ntoskip );
@@ -635,7 +650,8 @@ namespace mongo {
         OPDEBUG_TOSTRING_HELP( nscanned );
         OPDEBUG_TOSTRING_HELP_BOOL( idhack );
         OPDEBUG_TOSTRING_HELP_BOOL( scanAndOrder );
-        OPDEBUG_TOSTRING_HELP_BOOL( moved );
+        OPDEBUG_TOSTRING_HELP( nmoved );
+        OPDEBUG_TOSTRING_HELP( nupdated );
         OPDEBUG_TOSTRING_HELP_BOOL( fastmod );
         OPDEBUG_TOSTRING_HELP_BOOL( fastmodinsert );
         OPDEBUG_TOSTRING_HELP_BOOL( upsert );
@@ -651,14 +667,14 @@ namespace mongo {
         }
         
         OPDEBUG_TOSTRING_HELP( nreturned );
-        if ( responseLength )
+        if ( responseLength > 0 )
             s << " reslen:" << responseLength;
         s << " " << executionTime << "ms";
 
         return s.str();
     }
 
-#define OPDEBUG_APPEND_NUMBER(x) if( x != -1 ) b.append( #x , (x) )
+#define OPDEBUG_APPEND_NUMBER(x) if( x != -1 ) b.appendNumber( #x , (x) )
 #define OPDEBUG_APPEND_BOOL(x) if( x ) b.appendBool( #x , (x) )
     void OpDebug::append( const CurOp& curop, BSONObjBuilder& b ) const {
         b.append( "op" , iscommand ? "command" : opToString( op ) );
@@ -671,6 +687,8 @@ namespace mongo {
         if ( ! updateobj.isEmpty() )
             b.append( "updateobj" , updateobj );
         
+        const bool moved = (nmoved >= 1);
+
         OPDEBUG_APPEND_NUMBER( cursorid );
         OPDEBUG_APPEND_NUMBER( ntoreturn );
         OPDEBUG_APPEND_NUMBER( ntoskip );
@@ -680,6 +698,8 @@ namespace mongo {
         OPDEBUG_APPEND_BOOL( idhack );
         OPDEBUG_APPEND_BOOL( scanAndOrder );
         OPDEBUG_APPEND_BOOL( moved );
+        OPDEBUG_APPEND_NUMBER( nmoved );
+        OPDEBUG_APPEND_NUMBER( nupdated );
         OPDEBUG_APPEND_BOOL( fastmod );
         OPDEBUG_APPEND_BOOL( fastmodinsert );
         OPDEBUG_APPEND_BOOL( upsert );

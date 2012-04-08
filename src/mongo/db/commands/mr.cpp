@@ -23,7 +23,6 @@
 #include "../../client/dbclient.h"
 #include "../../client/connpool.h"
 #include "../../client/parallel.h"
-#include "../queryoptimizer.h"
 #include "../matcher.h"
 #include "../clientcursor.h"
 #include "../replutil.h"
@@ -49,7 +48,7 @@ namespace mongo {
 
         void JSFunction::init( State * state ) {
             _scope = state->scope();
-            assert( _scope );
+            verify( _scope );
             _scope->init( &_wantedScope );
 
             _func = _scope->createFunction( _code.c_str() );
@@ -69,7 +68,7 @@ namespace mongo {
          */
         void JSMapper::map( const BSONObj& o ) {
             Scope * s = _func.scope();
-            assert( s );
+            verify( s );
             if ( s->invoke( _func.func() , &_params, &o , 0 , true, false, true ) )
                 throw UserException( 9014, str::stream() << "map invoke failed: " + s->getError() );
         }
@@ -177,14 +176,14 @@ namespace mongo {
                 uassert( 13070 , "value too large to reduce" , ee.size() < ( BSONObjMaxUserSize / 2 ) );
 
                 if ( sizeSoFar + ee.size() > BSONObjMaxUserSize ) {
-                    assert( n > 1 ); // if not, inf. loop
+                    verify( n > 1 ); // if not, inf. loop
                     break;
                 }
 
                 valueBuilder->append( ee );
                 sizeSoFar += ee.size();
             }
-            assert(valueBuilder);
+            verify(valueBuilder);
             valueBuilder->done();
             BSONObj args = reduceArgs.obj();
 
@@ -216,7 +215,9 @@ namespace mongo {
             _reduce( x , key , endSizeEstimate );
         }
 
-        Config::Config( const string& _dbname , const BSONObj& cmdObj ) {
+        Config::Config( const string& _dbname , const BSONObj& cmdObj ) :
+            outNonAtomic(false)
+        {
 
             dbname = _dbname;
             ns = dbname + "." + cmdObj.firstElement().valuestr();
@@ -274,6 +275,12 @@ namespace mongo {
             }
             else {
                 uasserted( 13606 , "'out' has to be a string or an object" );
+            }
+
+            shardedFirstPass = false;
+            if (cmdObj.hasField("shardedFirstPass") && cmdObj["shardedFirstPass"].trueValue()){
+                massert(16054, "shardedFirstPass should only use replace outType", outType == REPLACE);
+                shardedFirstPass = true;
             }
 
             if ( outType != INMEMORY ) { // setup names
@@ -337,7 +344,7 @@ namespace mongo {
                     writelock l( _config.incLong );
                     Client::Context ctx( _config.incLong );
                     string err;
-                    if ( ! userCreateNS( _config.incLong.c_str() , BSON( "autoIndexId" << 0 ) , err , false ) ) {
+                    if ( ! userCreateNS( _config.incLong.c_str() , BSON( "autoIndexId" << 0 << "temp" << true ) , err , false ) ) {
                         uasserted( 13631 , str::stream() << "userCreateNS failed for mr incLong ns: " << _config.incLong << " err: " << err );
                     }
                 }
@@ -352,7 +359,7 @@ namespace mongo {
                 writelock lock( _config.tempLong.c_str() );
                 Client::Context ctx( _config.tempLong.c_str() );
                 string errmsg;
-                if ( ! userCreateNS( _config.tempLong.c_str() , BSONObj() , errmsg , true ) ) {
+                if ( ! userCreateNS( _config.tempLong.c_str() , BSON("temp" << true) , errmsg , true ) ) {
                     uasserted( 13630 , str::stream() << "userCreateNS failed for mr tempLong ns: " << _config.tempLong << " err: " << errmsg );
                 }
             }
@@ -431,7 +438,7 @@ namespace mongo {
                 BSONObj key = i->first;
                 BSONList& all = i->second;
 
-                assert( all.size() == 1 );
+                verify( all.size() == 1 );
 
                 BSONObjIterator vi( all[0] );
                 vi.next();
@@ -452,7 +459,7 @@ namespace mongo {
          */
         long long State::postProcessCollection(CurOp* op, ProgressMeterHolder& pm) {
             if ( _onDisk == false || _config.outType == Config::INMEMORY )
-                return _temp->size();
+                return numInMemKeys();
 
             if (_config.outNonAtomic)
                 return postProcessCollectionNonAtomic(op, pm);
@@ -470,7 +477,12 @@ namespace mongo {
                 // replace: just rename from temp to final collection name, dropping previous collection
                 _db.dropCollection( _config.finalLong );
                 BSONObj info;
-                if ( ! _db.runCommand( "admin" , BSON( "renameCollection" << _config.tempLong << "to" << _config.finalLong ) , info ) ) {
+
+                if ( ! _db.runCommand( "admin"
+                                      , BSON( "renameCollection" << _config.tempLong <<
+                                              "to" << _config.finalLong <<
+                                              "stayTemp" << _config.shardedFirstPass )
+                                      , info ) ) {
                     uasserted( 10076 ,  str::stream() << "rename failed: " << info );
                 }
                          
@@ -531,7 +543,7 @@ namespace mongo {
          * Insert doc in collection
          */
         void State::insert( const string& ns , const BSONObj& o ) {
-            assert( _onDisk );
+            verify( _onDisk );
 
             writelock l( ns );
             Client::Context ctx( ns );
@@ -552,7 +564,7 @@ namespace mongo {
          * Insert doc into the inc collection
          */
         void State::_insertToInc( BSONObj& o ) {
-            assert( _onDisk );
+            verify( _onDisk );
             theDataFileMgr.insertWithObjMod( _config.incLong.c_str() , o , true );
             getDur().commitIfNeeded();
         }
@@ -603,7 +615,7 @@ namespace mongo {
             _config.reducer->init( this );
             if ( _config.finalizer )
                 _config.finalizer->init( this );
-            _scope->setBoolean("_doFinal", _config.finalizer);
+            _scope->setBoolean("_doFinal", _config.finalizer.get() != 0);
 
             // by default start in JS mode, will be faster for small jobs
             _jsMode = _config.jsMode;
@@ -705,7 +717,7 @@ namespace mongo {
                         BSONObj key = i->first;
                         BSONList& all = i->second;
 
-                        assert( all.size() == 1 );
+                        verify( all.size() == 1 );
 
                         BSONObj res = _config.finalizer->finalize( all[0] );
 
@@ -719,7 +731,7 @@ namespace mongo {
             }
 
             // use index on "0" to pull sorted data
-            assert( _temp->size() == 0 );
+            verify( _temp->size() == 0 );
             BSONObj sortKey = BSON( "0" << 1 );
             {
                 bool foundIndex = false;
@@ -733,18 +745,19 @@ namespace mongo {
                     }
                 }
 
-                assert( foundIndex );
+                verify( foundIndex );
             }
 
-            readlock rl( _config.incLong.c_str() );
-            Client::Context ctx( _config.incLong );
+            Client::ReadContext ctx( _config.incLong );
 
             BSONObj prev;
             BSONList all;
 
-            assert( pm == op->setMessage( "m/r: (3/3) final reduce to collection" , _db.count( _config.incLong, BSONObj(), QueryOption_SlaveOk ) ) );
+            verify( pm == op->setMessage( "m/r: (3/3) final reduce to collection" , _db.count( _config.incLong, BSONObj(), QueryOption_SlaveOk ) ) );
 
-            shared_ptr<Cursor> temp = bestGuessCursor( _config.incLong.c_str() , BSONObj() , sortKey );
+            shared_ptr<Cursor> temp =
+            NamespaceDetailsTransient::bestGuessCursor( _config.incLong.c_str() , BSONObj() ,
+                                                       sortKey );
             auto_ptr<ClientCursor> cursor( new ClientCursor( QueryOption_NoCursorTimeout , temp , _config.incLong.c_str() ) );
 
             // iterate over all sorted objects
@@ -858,7 +871,7 @@ namespace mongo {
             if ( ! _onDisk )
                 return;
 
-            writelock l(_config.incLong);
+            Lock::DBWrite kl(_config.incLong);
             Client::Context ctx(_config.incLong);
 
             for ( InMemory::iterator i=_temp->begin(); i!=_temp->end(); i++ ) {
@@ -979,7 +992,7 @@ namespace mongo {
             */
             virtual bool slaveOk() const { return !replSet; }
 
-            virtual bool slaveOverrideOk() { return true; }
+            virtual bool slaveOverrideOk() const { return true; }
 
             virtual void help( stringstream &help ) const {
                 help << "Run a map/reduce operation on the server.\n";
@@ -997,6 +1010,27 @@ namespace mongo {
                 Config config( dbname , cmd );
 
                 log(1) << "mr ns: " << config.ns << endl;
+
+                auto_ptr<ClientCursor> holdCursor;
+                ShardChunkManagerPtr chunkManager;
+
+                {
+                    // Get chunk manager before we check our version, to make sure it doesn't increment
+                    // in the meantime
+                    if ( shardingState.needShardChunkManager( config.ns ) ) {
+                        chunkManager = shardingState.getShardChunkManager( config.ns );
+                    }
+
+                    // Check our version immediately, to avoid migrations happening in the meantime while we do prep
+                    Client::ReadContext ctx( config.ns );
+
+                    // Get a very basic cursor, prevents deletion of migrated data while we m/r
+                    shared_ptr<Cursor> temp = NamespaceDetailsTransient::getCursor( config.ns.c_str(), BSONObj(), BSONObj() );
+                    uassert( 15876, str::stream() << "could not create cursor over " << config.ns << " to hold data while prepping m/r", temp.get() );
+                    holdCursor = auto_ptr<ClientCursor>( new ClientCursor( QueryOption_NoCursorTimeout , temp , config.ns.c_str() ) );
+                    uassert( 15877, str::stream() << "could not create m/r holding client cursor over " << config.ns, holdCursor.get() );
+
+                }
 
                 bool shouldHaveData = false;
 
@@ -1033,19 +1067,22 @@ namespace mongo {
                     wassert( config.limit < 0x4000000 ); // see case on next line to 32 bit unsigned
                     long long mapTime = 0;
                     {
+                        // We've got a cursor preventing migrations off, now re-establish our useful cursor
+
+                        // Need lock and context to use it
                         readlock lock( config.ns );
-                        Client::Context ctx( config.ns );
+                        // This context does no version check, safe b/c we checked earlier and have an
+                        // open cursor
+                        Client::Context ctx( config.ns, dbpath, true, false );
 
-                        ShardChunkManagerPtr chunkManager;
-                        if ( shardingState.needShardChunkManager( config.ns ) ) {
-                            chunkManager = shardingState.getShardChunkManager( config.ns );
-                        }
-
-                        // obtain cursor on data to apply mr to, sorted
+                        // obtain full cursor on data to apply mr to
                         shared_ptr<Cursor> temp = NamespaceDetailsTransient::getCursor( config.ns.c_str(), config.filter, config.sort );
-                        uassert( 15876, str::stream() << "could not create cursor over " << config.ns << " for query : " << config.filter << " sort : " << config.sort, temp.get() );
+                        uassert( 16052, str::stream() << "could not create cursor over " << config.ns << " for query : " << config.filter << " sort : " << config.sort, temp.get() );
                         auto_ptr<ClientCursor> cursor( new ClientCursor( QueryOption_NoCursorTimeout , temp , config.ns.c_str() ) );
-                        uassert( 15877, str::stream() << "could not create client cursor over " << config.ns << " for query : " << config.filter << " sort : " << config.sort, cursor.get() );
+                        uassert( 16053, str::stream() << "could not create client cursor over " << config.ns << " for query : " << config.filter << " sort : " << config.sort, cursor.get() );
+
+                        // Cleanup our previous cursor
+                        holdCursor.reset();
 
                         Timer mt;
                         // go through each doc
@@ -1137,7 +1174,6 @@ namespace mongo {
                         errmsg = "there were emits but no data!";
                         return false;
                     }
-
                 }
                 catch( SendStaleConfigException& e ){
                     log() << "mr detected stale config, should retry" << causedBy(e) << endl;
@@ -1170,7 +1206,7 @@ namespace mongo {
         public:
             MapReduceFinishCommand() : Command( "mapreduce.shardedfinish" ) {}
             virtual bool slaveOk() const { return !replSet; }
-            virtual bool slaveOverrideOk() { return true; }
+            virtual bool slaveOverrideOk() const { return true; }
 
             virtual LockType locktype() const { return NONE; }
             bool run(const string& dbname , BSONObj& cmdObj, int, string& errmsg, BSONObjBuilder& result, bool) {

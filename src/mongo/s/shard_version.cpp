@@ -91,7 +91,7 @@ namespace mongo {
            return &( set->masterConn() );
         }
 
-        assert( false );
+        verify( false );
         return NULL;
     }
 
@@ -102,7 +102,7 @@ namespace mongo {
         WriteBackListener::init( *conn_in );
 
         DBClientBase* conn = getVersionable( conn_in );
-        assert( conn ); // errors thrown above
+        verify( conn ); // errors thrown above
 
         BSONObjBuilder cmdBuilder;
 
@@ -159,7 +159,7 @@ namespace mongo {
             return false;
 
         DBClientBase* conn = getVersionable( conn_in );
-        assert(conn); // errors thrown above
+        verify(conn); // errors thrown above
 
         unsigned long long officialSequenceNumber = 0;
 
@@ -177,15 +177,19 @@ namespace mongo {
 
             Shard shard = Shard::make( conn->getServerAddress() );
             if( refManager && ! refManager->compatibleWith( manager, shard ) ){
-                throw SendStaleConfigException( ns, str::stream() << "manager (" << manager->getVersion( shard )  << " : " << manager->getSequenceNumber() << ") "
-                                                                      << "not compatible with reference manager (" << refManager->getVersion( shard )  << " : " << refManager->getSequenceNumber() << ") "
-                                                                      << "on shard " << shard.getName() << " (" << shard.getAddress().toString() << ")" );
+                throw SendStaleConfigException( ns, str::stream() << "manager (" << manager->getVersion( shard ).toString()  << " : " << manager->getSequenceNumber() << ") "
+                                                                      << "not compatible with reference manager (" << refManager->getVersion( shard ).toString()  << " : " << refManager->getSequenceNumber() << ") "
+                                                                      << "on shard " << shard.getName() << " (" << shard.getAddress().toString() << ")",
+                                                refManager->getVersion( shard ), manager->getVersion( shard ) );
             }
         }
         else if( refManager ){
+
+            Shard shard = Shard::make( conn->getServerAddress() );
             throw SendStaleConfigException( ns, str::stream() << "not sharded (" << ( (manager.get() == 0) ? ( str::stream() << manager->getSequenceNumber() << ") " ) : (string)"<none>) " ) <<
                                                                      "but has reference manager (" << refManager->getSequenceNumber() << ") "
-                                                                  << "on conn " << conn->getServerAddress() << " (" << conn_in->getServerAddress() << ")" );
+                                                                  << "on conn " << conn->getServerAddress() << " (" << conn_in->getServerAddress() << ")",
+                                            refManager->getVersion( shard ), ShardChunkVersion( 0 ) );
         }
 
         // has the ChunkManager been reloaded since the last time we updated the connection-level version?

@@ -132,10 +132,16 @@ var startSlave = function(n) {
 
     admin.foo.insert({x:1});
     assert.soon(function() {
-        var last = local.oplog.rs.find().sort({$natural:-1}).limit(1).next();
-        var cur = conn.getDB("local").oplog.rs.find().sort({$natural:-1}).limit(1).next();
-        print("last: "+tojson(last)+" cur: "+tojson(cur));
-        return cur != null && last != null && cur.ts.t == last.ts.t && cur.ts.i == last.ts.i;
+        try {
+            var last = local.oplog.rs.find().sort({$natural:-1}).limit(1).next();
+            var cur = conn.getDB("local").oplog.rs.find().sort({$natural:-1}).limit(1).next();
+            print("last: "+tojson(last)+" cur: "+tojson(cur));
+            return cur != null && last != null && cur.ts.t == last.ts.t && cur.ts.i == last.ts.i;
+        }
+        catch (e) {
+            print(e);
+        }
+        return false;
     });
 
     return conn;
@@ -172,14 +178,25 @@ sleep(10000);
 pargs = new MongodRunner( ports[ 3 ], basePath + "-p", false, false,
                           ["--replSet", basename, "--oplogSize", 2],
                           {no_bind : true} );
-p = pargs.start(true);
+pargs.start(true);
 
-printjson(p.getDB("admin").runCommand({replSetGetStatus:1}));
+p = new Mongo("localhost:"+ports[3]);
 
-p.getDB("admin").runCommand({replSetReconfig : {
-      _id : basename,
-      members : [{_id:0, host : hostname+":"+ports[3]}]
+// initFromConfig will keep closing sockets, so we'll a couple of times
+assert.soon(function() {
+    try {
+        p.getDB("admin").runCommand({replSetReconfig : {
+            _id : basename,
+            members : [{_id:0, host : hostname+":"+ports[3]}]
         }, force : true});
+    }
+    catch (e) {
+        print(e);
+        return false;
+    }
+
+    return true;
+});
 
 print("start waiting for primary...");
 assert.soon(function() {

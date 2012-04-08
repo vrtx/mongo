@@ -15,78 +15,14 @@
  *    limitations under the License.
  */
 
-#include "pch.h"
-#include "../client/dbclient.h"
-#include "../db/cmdline.h"
-#include "../db/client_common.h"
-#include "../s/shard.h"
-#include "../util/timer.h"
+#include "../util/net/hostandport.h"
 
 namespace mongo {
-
-    CmdLine cmdLine;
-
-    const char * curNs = "in client mode";
-
-    bool dbexitCalled = false;
 
     string dynHostMyName() { return ""; }
 
     void dynHostResolve(string& name, int& port) {
-        assert(false);
+        verify(false);
     }
-
-    void exitCleanly( ExitCode code ) {
-        dbexit( code );
-    }
-
-    void dbexit( ExitCode returnCode, const char *whyMsg , bool tryToGetLock ) {
-        dbexitCalled = true;
-        out() << "dbexit called" << endl;
-        if ( whyMsg )
-            out() << " b/c " << whyMsg << endl;
-        out() << "exiting" << endl;
-        ::exit( returnCode );
-    }
-
-    bool inShutdown() {
-        return dbexitCalled;
-    }
-
-    void setupSignals() {
-        // maybe should do SIGPIPE here, not sure
-    }
-
-    string getDbContext() {
-        return "in client only mode";
-    }
-
-    bool haveLocalShardingInfo( const string& ns ) {
-        return false;
-    }
-
-    DBClientBase * createDirectClient() {
-        uassert( 10256 ,  "no createDirectClient in clientOnly" , 0 );
-        return 0;
-    }
-
-    void Shard::getAllShards( vector<Shard>& all ) {
-        assert(0);
-    }
-
-    bool Shard::isAShardNode( const string& ident ) {
-        assert(0);
-        return false;
-    }
-
-    string prettyHostName() {
-        assert(0);
-        return "";
-    }
-
-    ClientBasic* ClientBasic::getCurrent() {
-        return 0;
-    }
-
 
 }

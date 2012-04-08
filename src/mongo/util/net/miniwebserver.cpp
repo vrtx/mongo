@@ -108,18 +108,18 @@ namespace mongo {
         return false;
     }
 
-    void MiniWebServer::accepted(Socket sock) {
-        sock.postFork();
-        sock.setTimeout(8);
+    void MiniWebServer::accepted(boost::shared_ptr<Socket> psock) {
+        psock->postFork();
+        psock->setTimeout(8);
         char buf[4096];
         int len = 0;
         while ( 1 ) {
             int left = sizeof(buf) - 1 - len;
             if( left == 0 )
                 break;
-            int x = sock.unsafe_recv( buf + len , left );
+            int x = psock->unsafe_recv( buf + len , left );
             if ( x <= 0 ) {
-                sock.close();
+                psock->close();
                 return;
             }
             len += x;
@@ -135,7 +135,7 @@ namespace mongo {
         vector<string> headers;
 
         try {
-            doRequest(buf, parseURL( buf ), responseMsg, responseCode, headers, sock.remoteAddr() );
+            doRequest(buf, parseURL( buf ), responseMsg, responseCode, headers, psock->remoteAddr() );
         }
         catch ( std::exception& e ) {
             responseCode = 500;
@@ -156,7 +156,7 @@ namespace mongo {
         }
         else {
             for ( vector<string>::iterator i = headers.begin(); i != headers.end(); i++ ) {
-                assert( strncmp("Content-Length", i->c_str(), 14) );
+                verify( strncmp("Content-Length", i->c_str(), 14) );
                 ss << *i << "\r\n";
             }
         }
@@ -167,8 +167,8 @@ namespace mongo {
         string response = ss.str();
 
         try {
-            sock.send( response.c_str(), response.size() , "http response" );
-            sock.close();
+            psock->send( response.c_str(), response.size() , "http response" );
+            psock->close();
         }
         catch ( SocketException& e ) {
             log(1) << "couldn't send data to http client: " << e << endl;

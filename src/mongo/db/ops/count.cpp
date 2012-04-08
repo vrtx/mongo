@@ -43,8 +43,10 @@ namespace mongo {
         long long count = 0;
         long long skip = cmd["skip"].numberLong();
         long long limit = cmd["limit"].numberLong();
-        bool simpleEqualityMatch;
-        shared_ptr<Cursor> cursor = NamespaceDetailsTransient::getCursor( ns, query, BSONObj(), false, &simpleEqualityMatch );
+        bool simpleEqualityMatch = false;
+        shared_ptr<Cursor> cursor =
+        NamespaceDetailsTransient::getCursor( ns, query, BSONObj(), QueryPlanSelectionPolicy::any(),
+                                             &simpleEqualityMatch );
         ClientCursor::CleanupPointer ccPointer;
         ElapsedTracker timeToStartYielding( 256, 20 );
         try {

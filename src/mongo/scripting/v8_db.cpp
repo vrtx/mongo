@@ -15,14 +15,6 @@
  *    limitations under the License.
  */
 
-#if defined(_WIN32)
-/** this is a hack - v8stdint.h defined uint16_t etc. on _WIN32 only, and that collides with 
-    our usage of boost */
-#include "boost/cstdint.hpp"
-using namespace boost;
-#define V8STDINT_H_
-#endif
-
 #include "v8_wrapper.h"
 #include "v8_utils.h"
 #include "engine_v8.h"
@@ -31,6 +23,7 @@ using namespace boost;
 #include "util/text.h"
 #include "../client/syncclusterconnection.h"
 #include "../s/d_logic.h"
+#include "../db/namespacestring.h"
 #include <iostream>
 
 using namespace std;
@@ -203,7 +196,7 @@ namespace mongo {
         char host[255];
 
         if ( args.Length() > 0 && args[0]->IsString() ) {
-            assert( args[0]->ToString()->Utf8Length() < 250 );
+            verify( args[0]->ToString()->Utf8Length() < 250 );
             args[0]->ToString()->WriteAscii( host );
         }
         else {
@@ -218,7 +211,7 @@ namespace mongo {
 
         DBClientWithCommands * conn;
         {
-            V8Unlock ul;
+            //V8Unlock ul;
             conn = cs.connect( errmsg );
         }
         if ( ! conn )
@@ -228,7 +221,7 @@ namespace mongo {
         self.MakeWeak( conn , destroyConnection );
 
         {
-            V8Unlock ul;
+            //V8Unlock ul;
             ScriptEngine::runConnectCallback( *conn );
         }
 
@@ -246,7 +239,7 @@ namespace mongo {
 
         DBClientBase * conn;
         {
-            V8Unlock ul;
+            //V8Unlock ul;
             conn = createDirectClient();
         }
 
@@ -273,7 +266,7 @@ namespace mongo {
     DBClientBase * getConnection( const Arguments& args ) {
         Local<External> c = External::Cast( *(args.This()->GetInternalField( 0 )) );
         DBClientBase * conn = (DBClientBase*)(c->Value());
-        assert( conn );
+        verify( conn );
         return conn;
     }
 
@@ -317,7 +310,7 @@ namespace mongo {
             int batchSize = (int)(args[5]->ToNumber()->Value());
             int options = (int)(args[6]->ToNumber()->Value());
             {
-                V8Unlock u;
+                //V8Unlock u;
                 cursor = conn->query( ns, q ,  nToReturn , nToSkip , haveFields ? &fields : 0, options , batchSize );
                 if ( ! cursor.get() ) 
                     return v8::ThrowException( v8::String::New( "error doing query: failed" ) );
@@ -371,7 +364,7 @@ namespace mongo {
 
             DDD( "want to save batch : " << bos.length );
             try {
-                V8Unlock u;
+                //V8Unlock u;
                 conn->insert( ns , bos );
             }
             catch ( ... ) {
@@ -390,7 +383,7 @@ namespace mongo {
 
             DDD( "want to save : " << o.jsonString() );
             try {
-                V8Unlock u;
+                //V8Unlock u;
                 conn->insert( ns , o );
             }
             catch ( ... ) {
@@ -422,7 +415,7 @@ namespace mongo {
 
         DDD( "want to remove : " << o.jsonString() );
         try {
-            V8Unlock u;
+            //V8Unlock u;
             conn->remove( ns , o , justOne );
         }
         catch ( ... ) {
@@ -452,7 +445,7 @@ namespace mongo {
         try {
             BSONObj q1 = scope->v8ToMongo( q );
             BSONObj o1 = scope->v8ToMongo( o );
-            V8Unlock u;
+            //V8Unlock u;
             conn->update( ns , q1 , o1 , upsert, multi );
         }
         catch ( ... ) {
@@ -524,7 +517,7 @@ namespace mongo {
             return v8::Undefined();
         BSONObj o;
         {
-            V8Unlock u;
+            //V8Unlock u;
             o = cursor->next();
         }
         bool ro = false;
@@ -539,7 +532,7 @@ namespace mongo {
             return Boolean::New( false );
         bool ret;
         {
-            V8Unlock u;
+            //V8Unlock u;
             ret = cursor->more();
         }
         return Boolean::New( ret );
@@ -551,7 +544,7 @@ namespace mongo {
             return v8::Number::New( (double) 0 );
         int ret;
         {
-            V8Unlock u;
+            //V8Unlock u;
             ret = cursor->objsLeftInBatch();
         }
         return v8::Number::New( (double) ret );
@@ -566,19 +559,26 @@ namespace mongo {
     // --- DB ----
 
     v8::Handle<v8::Value> dbInit(V8Scope* scope, const v8::Arguments& args) {
-        assert( args.Length() == 2 );
+        verify( args.Length() == 2 );
 
         args.This()->Set( scope->getV8Str( "_mongo" ) , args[0] );
         args.This()->Set( scope->getV8Str( "_name" ) , args[1] );
 
         for ( int i=0; i<args.Length(); i++ )
-            assert( ! args[i]->IsUndefined() );
+            verify( ! args[i]->IsUndefined() );
 
+        string dbName = toSTLString( args[1] );
+        if ( !NamespaceString::validDBName( dbName)) {
+            string msg = str::stream() << "[" << dbName << "] is not a "
+                                       << "valid database name";
+            return v8::ThrowException( v8::String::New( msg.c_str() ));
+        }
+        
         return v8::Undefined();
     }
 
     v8::Handle<v8::Value> collectionInit( V8Scope* scope, const v8::Arguments& args ) {
-        assert( args.Length() == 4 );
+        verify( args.Length() == 4 );
 
         args.This()->Set( scope->getV8Str( "_mongo" ) , args[0] );
         args.This()->Set( scope->getV8Str( "_db" ) , args[1] );
@@ -589,7 +589,7 @@ namespace mongo {
             return v8::ThrowException( v8::String::New( "can't use sharded collection from db.eval" ) );
 
         for ( int i=0; i<args.Length(); i++ )
-            assert( ! args[i]->IsUndefined() );
+            verify( ! args[i]->IsUndefined() );
 
         return v8::Undefined();
     }
@@ -598,7 +598,7 @@ namespace mongo {
 
         v8::Handle<v8::Object> t = args.This();
 
-        assert( args.Length() >= 4 );
+        verify( args.Length() >= 4 );
 
         t->Set( scope->getV8Str( "_mongo" ) , args[0] );
         t->Set( scope->getV8Str( "_db" ) , args[1] );
@@ -675,12 +675,12 @@ namespace mongo {
             return prop;
         } else if ( sname.length() == 0 || sname[0] == '_' ) {
             // if starts with '_' we dont return collection, one must use getCollection()
-            return v8::Undefined();
+            return v8::Handle<v8::Value>();
         }
 
         // no hit, create new collection
         v8::Handle<v8::Value> getCollection = info.This()->GetPrototype()->ToObject()->Get( v8::String::New( "getCollection" ) );
-        assert( getCollection->IsFunction() );
+        verify( getCollection->IsFunction() );
 
         TryCatch tryCatch;
         v8::Function * f = (v8::Function*)(*getCollection);
@@ -701,7 +701,7 @@ namespace mongo {
 
     v8::Handle<v8::Value> dbQueryIndexAccess( unsigned int index , const v8::AccessorInfo& info ) {
         v8::Handle<v8::Value> arrayAccess = info.This()->GetPrototype()->ToObject()->Get( v8::String::New( "arrayAccess" ) );
-        assert( arrayAccess->IsFunction() );
+        verify( arrayAccess->IsFunction() );
 
         v8::Function * f = (v8::Function*)(*arrayAccess);
         v8::Handle<v8::Value> argv[1];

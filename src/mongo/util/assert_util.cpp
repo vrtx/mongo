@@ -17,9 +17,6 @@
 
 #include "pch.h"
 #include "assert_util.h"
-#include "assert.h"
-//#include "file.h"
-#include <cmath>
 using namespace std;
 
 #ifndef _WIN32
@@ -27,8 +24,7 @@ using namespace std;
 #include <sys/file.h>
 #endif
 
-//#include "../bson/bson.h"
-#include "../db/jsobj.h"
+#include "../bson/bsonobjbuilder.h"
 
 namespace mongo {
 
@@ -85,7 +81,8 @@ namespace mongo {
         static time_t lastWhen;
         static unsigned lastLine;
         if( lastLine == line && time(0)-lastWhen < 5 ) { 
-            if( rateLimited++ == 0 ) { 
+            if( !rateLimited ) { 
+                rateLimited = true;
                 log() << "rate limiting wassert" << endl;
             }
             return;
@@ -115,7 +112,7 @@ namespace mongo {
         breakpoint();
 #if defined(_DEBUG) || defined(_DURABLEDEFAULTON) || defined(_DURABLEDEFAULTOFF)
         // this is so we notice in buildbot
-        log() << "\n\n***aborting after assert() failure as this is a debug/test build\n\n" << endl;
+        log() << "\n\n***aborting after verify() failure as this is a debug/test build\n\n" << endl;
         abort();
 #endif
         throw e;
@@ -172,7 +169,7 @@ namespace mongo {
         assertionCount.condrollover( ++assertionCount.warning );
         tlog() << "Assertion: " << msgid << ":" << msg << endl;
         raiseError(msgid,msg && *msg ? msg : "massert failure");
-        breakpoint();
+        //breakpoint();
         printStackTrace();
         throw MsgAssertionException(msgid, msg);
     }
@@ -222,7 +219,7 @@ namespace mongo {
 
     NOINLINE_DECL ErrorMsg::ErrorMsg(const char *msg, char ch) {
         int l = strlen(msg);
-        assert( l < 128);
+        verify( l < 128);
         memcpy(buf, msg, l);
         char *p = buf + l;
         p[0] = ch;
@@ -231,11 +228,10 @@ namespace mongo {
 
     NOINLINE_DECL ErrorMsg::ErrorMsg(const char *msg, unsigned val) {
         int l = strlen(msg);
-        assert( l < 128);
+        verify( l < 128);
         memcpy(buf, msg, l);
         char *p = buf + l;
         sprintf(p, "%u", val);
     }
 
 }
-

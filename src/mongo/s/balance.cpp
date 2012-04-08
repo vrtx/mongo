@@ -46,17 +46,17 @@ namespace mongo {
             const CandidateChunk& chunkInfo = *it->get();
 
             DBConfigPtr cfg = grid.getDBConfig( chunkInfo.ns );
-            assert( cfg );
+            verify( cfg );
 
             ChunkManagerPtr cm = cfg->getChunkManager( chunkInfo.ns );
-            assert( cm );
+            verify( cm );
 
             const BSONObj& chunkToMove = chunkInfo.chunk;
             ChunkPtr c = cm->findChunk( chunkToMove["min"].Obj() );
             if ( c->getMin().woCompare( chunkToMove["min"].Obj() ) || c->getMax().woCompare( chunkToMove["max"].Obj() ) ) {
                 // likely a split happened somewhere
                 cm = cfg->getChunkManager( chunkInfo.ns , true /* reload */);
-                assert( cm );
+                verify( cm );
 
                 c = cm->findChunk( chunkToMove["min"].Obj() );
                 if ( c->getMin().woCompare( chunkToMove["min"].Obj() ) || c->getMax().woCompare( chunkToMove["max"].Obj() ) ) {
@@ -79,7 +79,7 @@ namespace mongo {
             if ( res["chunkTooBig"].trueValue() ) {
                 // reload just to be safe
                 cm = cfg->getChunkManager( chunkInfo.ns );
-                assert( cm );
+                verify( cm );
                 c = cm->findChunk( chunkToMove["min"].Obj() );
                 
                 log() << "forcing a split because migrate failed for size reasons" << endl;
@@ -101,13 +101,14 @@ namespace mongo {
         return movedCount;
     }
 
-    void Balancer::_ping( DBClientBase& conn ) {
+    void Balancer::_ping( DBClientBase& conn, bool waiting ) {
         WriteConcern w = conn.getWriteConcern();
         conn.setWriteConcern( W_NONE );
 
         conn.update( ShardNS::mongos ,
                      BSON( "_id" << _myid ) ,
-                     BSON( "$set" << BSON( "ping" << DATENOW << "up" << (int)(time(0)-_started) ) ) ,
+                     BSON( "$set" << BSON( "ping" << DATENOW << "up" << (int)(time(0)-_started)
+                                        << "waiting" << waiting ) ) ,
                      true );
 
         conn.setWriteConcern( w);
@@ -142,7 +143,7 @@ namespace mongo {
     }
 
     void Balancer::_doBalanceRound( DBClientBase& conn, vector<CandidateChunkPtr>* candidateChunks ) {
-        assert( candidateChunks );
+        verify( candidateChunks );
 
         //
         // 1. Check whether there is any sharded collection to be balanced by querying
@@ -155,8 +156,13 @@ namespace mongo {
             BSONObj col = cursor->nextSafe();
 
             // sharded collections will have a shard "key".
-            if ( ! col["key"].eoo() )
+            if ( ! col["key"].eoo() && ! col["noBalance"].trueValue() ){
                 collections.push_back( col["_id"].String() );
+            }
+            else if( col["noBalance"].trueValue() ){
+                LOG(1) << "not balancing collection " << col["_id"].String() << ", explicitly disabled" << endl;
+            }
+
         }
         cursor.reset();
 
@@ -290,6 +296,10 @@ namespace mongo {
                 // now make sure we should even be running
                 if ( ! grid.shouldBalance() ) {
                     LOG(1) << "skipping balancing round because balancing is disabled" << endl;
+
+                    // Ping again so scripts can determine if we're active without waiting
+                    _ping( conn.conn(), true );
+
                     conn.done();
                     
                     sleepsecs( 30 );
@@ -308,6 +318,10 @@ namespace mongo {
                     dist_lock_try lk( &balanceLock , "doing balance round" );
                     if ( ! lk.got() ) {
                         LOG(1) << "skipping balancing round because another balancer is active" << endl;
+
+                        // Ping again so scripts can determine if we're active without waiting
+                        _ping( conn.conn(), true );
+
                         conn.done();
                         
                         sleepsecs( 30 ); // no need to wake up soon
@@ -320,6 +334,7 @@ namespace mongo {
                     _doBalanceRound( conn.conn() , &candidateChunks );
                     if ( candidateChunks.size() == 0 ) {
                         LOG(1) << "no need to move any chunk" << endl;
+                        _balancedLastTime = 0;
                     }
                     else {
                         _balancedLastTime = _moveChunks( &candidateChunks );
@@ -327,9 +342,12 @@ namespace mongo {
                     
                     LOG(1) << "*** end of balancing round" << endl;
                 }
+
+                // Ping again so scripts can determine if we're active without waiting
+                _ping( conn.conn(), true );
                 
                 conn.done();
-                    
+
                 sleepsecs( _balancedLastTime ? 5 : 10 );
             }
             catch ( std::exception& e ) {

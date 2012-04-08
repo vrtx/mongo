@@ -1,4 +1,4 @@
-/** @file pch.h : include file for standard system include files,
+   /** @file pch.h : include file for standard system include files,
  *  or project specific include files that are used frequently, but
  *  are changed infrequently
  */
@@ -22,6 +22,7 @@
 #define MONGO_PCH_H
 
 #if defined(MONGO_EXPOSE_MACROS)
+
 # define JS_C_STRINGS_ARE_UTF8
 # undef  SUPPORT_UCP
 # define SUPPORT_UCP
@@ -58,48 +59,34 @@
 
 #include <ctime>
 #include <cstring>
-#include <sstream>
 #include <string>
 #include <memory>
 #include <string>
 #include <iostream>
-#include <fstream>
 #include <map>
 #include <vector>
 #include <set>
 #include <stdio.h>
 #include <stdlib.h>
-#include <sstream>
 #include <signal.h>
 #include "targetver.h"
 #include "time.h"
 #include "string.h"
 #include "limits.h"
 
-//#include <boost/any.hpp>
-#include "boost/thread/once.hpp"
-//#include <boost/archive/iterators/transform_width.hpp>
 #define BOOST_FILESYSTEM_VERSION 2
-#include <boost/filesystem/convenience.hpp>
-#include <boost/filesystem/exception.hpp>
-#include <boost/filesystem/operations.hpp>
-#include <boost/program_options.hpp>
+#include <boost/lexical_cast.hpp>
 #include <boost/shared_ptr.hpp>
 #include <boost/smart_ptr.hpp>
 #include <boost/function.hpp>
-#include "boost/bind.hpp"
-#include "boost/function.hpp"
+#include <boost/bind.hpp>
 #include <boost/thread/tss.hpp>
-#include "boost/detail/endian.hpp"
-#define BOOST_SPIRIT_THREADSAFE
+#include <boost/detail/endian.hpp>
 #include <boost/version.hpp>
-#include <boost/tuple/tuple.hpp>
 #include <boost/thread/thread.hpp>
 #include <boost/thread/condition.hpp>
 #include <boost/thread/recursive_mutex.hpp>
 #include <boost/thread/xtime.hpp>
-#undef assert
-#define assert MONGO_assert
 
 namespace mongo {
 
@@ -147,21 +134,15 @@ namespace mongo {
     void exit( ExitCode returnCode );
     bool inShutdown();
 
-    using namespace boost::filesystem;
     void asserted(const char *msg, const char *file, unsigned line);
 }
 
 
-
-// TODO: Rework the headers so we don't need this craziness
-#include "bson/inline_decls.h"
-#define MONGO_assert(_Expression) (void)( MONGO_likely(!!(_Expression)) || (mongo::asserted(#_Expression, __FILE__, __LINE__), 0) )
-
+#include "util/assert_util.h"
 #include "util/debug_util.h"
 #include "util/goodies.h"
 #include "util/log.h"
 #include "util/allocator.h"
-#include "util/assert_util.h"
 
 namespace mongo {
 

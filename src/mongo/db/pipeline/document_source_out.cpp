@@ -26,31 +26,41 @@ namespace mongo {
     DocumentSourceOut::~DocumentSourceOut() {
     }
 
+    const char *DocumentSourceOut::getSourceName() const {
+        return outName;
+    }
+
     bool DocumentSourceOut::eof() {
-	return pSource->eof();
+        return pSource->eof();
     }
 
     bool DocumentSourceOut::advance() {
-	return pSource->advance();
+        DocumentSource::advance(); // check for interrupts
+
+        return pSource->advance();
     }
 
     boost::intrusive_ptr<Document> DocumentSourceOut::getCurrent() {
-	return pSource->getCurrent();
+        return pSource->getCurrent();
     }
 
-    DocumentSourceOut::DocumentSourceOut(BSONElement *pBsonElement) {
-	assert(false && "unimplemented");
+    DocumentSourceOut::DocumentSourceOut(
+        BSONElement *pBsonElement,
+        const intrusive_ptr<ExpressionContext> &pExpCtx):
+        DocumentSource(pExpCtx) {
+        verify(false && "unimplemented");
     }
 
     intrusive_ptr<DocumentSourceOut> DocumentSourceOut::createFromBson(
-	BSONElement *pBsonElement) {
-	intrusive_ptr<DocumentSourceOut> pSource(
-	    new DocumentSourceOut(pBsonElement));
+        BSONElement *pBsonElement,
+        const intrusive_ptr<ExpressionContext> &pExpCtx) {
+        intrusive_ptr<DocumentSourceOut> pSource(
+            new DocumentSourceOut(pBsonElement, pExpCtx));
 
-	return pSource;
+        return pSource;
     }
 
     void DocumentSourceOut::sourceToBson(BSONObjBuilder *pBuilder) const {
-	assert(false); // CW TODO
+        verify(false); // CW TODO
     }
 }

@@ -20,7 +20,7 @@
 #pragma once
 
 
-#include "../client/dbclient.h"
+#include "mongo/client/dbclient.h"
 #include "curop-inl.h"
 #include "security.h"
 #include "cmdline.h"
@@ -40,61 +40,18 @@ namespace mongo {
         */
         int level;
         mongo::mutex mutex;
-        void openFile() {
-            assert( f == 0 );
-            stringstream ss;
-            ss << dbpath << "/diaglog." << hex << time(0);
-            string name = ss.str();
-            f = new ofstream(name.c_str(), ios::out | ios::binary);
-            if ( ! f->good() ) {
-                problem() << "diagLogging couldn't open " << name << endl;
-                // todo what is this? :
-                throw 1717;
-            }
-            else {
-                log() << "diagLogging using file " << name << endl;
-            }
-        }
+        void openFile();
+
     public:
-        DiagLog() : f(0) , level(0), mutex("DiagLog") { }
+        DiagLog();
         int getLevel() const { return level; }
         /**
          * @return old
          */
-        int setLevel( int newLevel ) {
-            scoped_lock lk(mutex);
-            int old = level;
-            log() << "diagLogging level=" << newLevel << endl;
-            if( f == 0 ) { 
-                openFile();
-            }
-            level = newLevel; // must be done AFTER f is set
-            return old;
-        }
-        void flush() {
-            if ( level ) {
-                log() << "flushing diag log" << endl;
-                scoped_lock lk(mutex);
-                f->flush();
-            }
-        }
-        void write(char *data,int len) {
-            if ( level & 1 ) {
-                scoped_lock lk(mutex);
-                f->write(data,len);
-            }
-        }
-        void readop(char *data, int len) {
-            if ( level & 2 ) {
-                bool log = (level & 4) == 0;
-                OCCASIONALLY log = true;
-                if ( log ) {
-                    scoped_lock lk(mutex);
-                    assert( f );
-                    f->write(data,len);
-                }
-            }
-        }
+        int setLevel( int newLevel );
+        void flush();
+        void writeop(char *data,int len);
+        void readop(char *data, int len);
     };
 
     extern DiagLog _diaglog;
@@ -128,8 +85,10 @@ namespace mongo {
      */
     class DBDirectClient : public DBClientBase {
     public:
+        using DBClientBase::query;
+
         virtual auto_ptr<DBClientCursor> query(const string &ns, Query query, int nToReturn = 0, int nToSkip = 0,
-                                               const BSONObj *fieldsToReturn = 0, int queryOptions = 0);
+                                               const BSONObj *fieldsToReturn = 0, int queryOptions = 0, int batchSize = 0);
 
         virtual bool isFailed() const {
             return false;
@@ -141,7 +100,7 @@ namespace mongo {
             return "localhost"; // TODO: should this have the port?
         }
         virtual bool call( Message &toSend, Message &response, bool assertOk=true , string * actualServer = 0 );
-        virtual void say( Message &toSend, bool isRetry = false );
+        virtual void say( Message &toSend, bool isRetry = false , string * actualServer = 0 );
         virtual void sayPiggyBack( Message &toSend ) {
             // don't need to piggy back when connected locally
             return say( toSend );
@@ -160,6 +119,9 @@ namespace mongo {
         double getSoTimeout() const { return 0; }
 
         virtual bool lazySupported() const { return true; }
+
+        virtual QueryOptions _lookupAvailableOptions();
+
     private:
         static HostAndPort _clientHost;
     };

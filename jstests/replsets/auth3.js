@@ -1,3 +1,4 @@
+if ( !_isWindows() ) { // SERVER-5024
 var path = "jstests/libs/";
 
 var rs = new ReplSetTest({"nodes" : {node0 : {}, node1 : {}, arbiter : {}}, keyFile : path+"key1"});
@@ -7,6 +8,7 @@ rs.initiate();
 master = rs.getMaster();
 print("adding user");
 master.getDB("admin").addUser("foo", "bar");
+master.getDB("admin").runCommand({getLastError:1, w:2});
 
 var checkValidState = function(i) {
     assert.soon(function() {
@@ -66,3 +68,4 @@ m = rs.nodes[0];
 
 checkValidState(0);
 checkValidState(1);
+} // !_isWindows()

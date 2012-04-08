@@ -90,12 +90,12 @@ namespace mongo {
         unsigned short _kdo;
         void setKeyDataOfs(short s) {
             _kdo = s;
-            assert(s>=0);
+            verify(s>=0);
         }
         /** Seems to be redundant. */
         void setKeyDataOfsSavingUse(short s) {
             _kdo = s;
-            assert(s>=0);
+            verify(s>=0);
         }
         /**
          * Unused keys are not returned by read operations.  Keys may be marked
@@ -180,6 +180,8 @@ namespace mongo {
 
         // largest key size we allow.  note we very much need to support bigger keys (somehow) in the future.
         static const int KeyMax = OldBucketSize / 10;
+        // A sentinel value sometimes used to identify a deallocated bucket.
+        static const int INVALID_N_SENTINEL = -1;
     };
 
     // a a a ofs ofs ofs ofs
@@ -238,9 +240,9 @@ namespace mongo {
         void operator=(const DiskLoc& loc) {
             ofs = loc.getOfs();
             int la = loc.a();
-            assert( la <= 0xffffff ); // must fit in 3 bytes
+            verify( la <= 0xffffff ); // must fit in 3 bytes
             if( la < 0 ) {
-                assert( la == -1 );
+                verify( la == -1 );
                 la = 0;
                 ofs = OurNullOfs;
             }
@@ -262,6 +264,8 @@ namespace mongo {
         enum { BucketSize = 8192-16 }; // leave room for Record header
         // largest key size we allow.  note we very much need to support bigger keys (somehow) in the future.
         static const int KeyMax = 1024;
+        // A sentinel value sometimes used to identify a deallocated bucket.
+        static const unsigned short INVALID_N_SENTINEL = 0xffff;
     protected:
         /** Parent bucket of this bucket, which isNull() for the root bucket. */
         Loc parent;
@@ -408,7 +412,7 @@ namespace mongo {
         bool _pushBack(const DiskLoc recordLoc, const Key& key, const Ordering &order, const DiskLoc prevChild);
         void pushBack(const DiskLoc recordLoc, const Key& key, const Ordering &order, const DiskLoc prevChild) {
             bool ok = _pushBack( recordLoc , key , order , prevChild );
-            assert(ok);
+            verify(ok);
         }
 
         /**
@@ -991,6 +995,18 @@ namespace mongo {
     class FieldRangeVector;
     class FieldRangeVectorIterator;
     
+    /**
+     * A Cursor class for Btree iteration.
+     *
+     * A BtreeCursor can record its current btree position (noteLoc()) and then relocate this
+     * position after a write (checkLoc()).  A recorded btree position consists of a btree bucket,
+     * bucket key offset, and unique btree key.  To relocate a unique btree key, a BtreeCursor first
+     * checks the btree key at its recorded btree bucket and bucket key offset.  If the key at that
+     * location does not match the recorded btree key, and an adjacent key also fails to match,
+     * the recorded key (or the next existing key following it) is located in the btree using binary
+     * search.  If the recorded btree bucket is invalidated, the initial recorded bucket check is
+     * not attempted (see SERVER-4575).
+     */
     class BtreeCursor : public Cursor {
     protected:
         BtreeCursor( NamespaceDetails *_d, int _idxNo, const IndexDetails&, const BSONObj &startKey, const BSONObj &endKey, bool endKeyInclusive, int direction );
@@ -1029,9 +1045,9 @@ namespace mongo {
         virtual bool isMultiKey() const { return _multikey; }
 
         /*const _KeyNode& _currKeyNode() const {
-            assert( !bucket.isNull() );
+            verify( !bucket.isNull() );
             const _KeyNode& kn = keyNode(keyOfs);
-            assert( kn.isUsed() );
+            verify( kn.isUsed() );
             return kn;
         }*/
 
@@ -1160,7 +1176,7 @@ namespace mongo {
      */
     template< class V >
     BtreeBucket<V> * DiskLoc::btreemod() const {
-        assert( _a != -1 );
+        verify( _a != -1 );
         BtreeBucket<V> *b = const_cast< BtreeBucket<V> * >( btree<V>() );
         return static_cast< BtreeBucket<V>* >( getDur().writingPtr( b, V::BucketSize ) );
     }

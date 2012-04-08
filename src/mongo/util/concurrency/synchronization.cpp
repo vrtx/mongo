@@ -25,8 +25,6 @@ namespace mongo {
         cur = 0;
     }
 
-    Notification::~Notification() { }
-
     void Notification::waitToBeNotified() {
         scoped_lock lock( _mutex );
         while ( lookFor != cur )
@@ -36,7 +34,7 @@ namespace mongo {
 
     void Notification::notifyOne() {
         scoped_lock lock( _mutex );
-        assert( cur != lookFor );
+        verify( cur != lookFor );
         cur++;
         _condition.notify_one();
     }

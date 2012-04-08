@@ -23,26 +23,26 @@ namespace mongo {
 
     intrusive_ptr<const Value> AccumulatorLast::evaluate(
         const intrusive_ptr<Document> &pDocument) const {
-        assert(vpOperand.size() == 1);
+        verify(vpOperand.size() == 1);
 
-	/* always remember the last value seen */
-	pValue = vpOperand[0]->evaluate(pDocument);
+        /* always remember the last value seen */
+        pValue = vpOperand[0]->evaluate(pDocument);
 
         return pValue;
     }
 
     AccumulatorLast::AccumulatorLast():
-	AccumulatorSingleValue() {
+        AccumulatorSingleValue() {
     }
 
     intrusive_ptr<Accumulator> AccumulatorLast::create(
-	const intrusive_ptr<ExpressionContext> &pCtx) {
-	intrusive_ptr<AccumulatorLast> pAccumulator(
-	    new AccumulatorLast());
+        const intrusive_ptr<ExpressionContext> &pCtx) {
+        intrusive_ptr<AccumulatorLast> pAccumulator(
+            new AccumulatorLast());
         return pAccumulator;
     }
 
     const char *AccumulatorLast::getOpName() const {
-	return "$last";
+        return "$last";
     }
 }

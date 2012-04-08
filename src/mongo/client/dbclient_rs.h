@@ -17,8 +17,15 @@
 
 #pragma once
 
-#include "../pch.h"
-#include "dbclient.h"
+#include "pch.h"
+
+#include <boost/function.hpp>
+#include <boost/shared_ptr.hpp>
+#include <set>
+#include <utility>
+
+#include "mongo/client/dbclientinterface.h"
+#include "mongo/util/net/hostandport.h"
 
 namespace mongo {
 
@@ -214,8 +221,9 @@ namespace mongo {
        an exception) before the failover is complete.  Operations are not retried.
     */
     class DBClientReplicaSet : public DBClientBase {
-
     public:
+        using DBClientBase::query;
+
         /** Call connect() after constructing. autoReconnect is always on for DBClientReplicaSet connections. */
         DBClientReplicaSet( const string& name , const vector<HostAndPort>& servers, double so_timeout=0 );
         virtual ~DBClientReplicaSet();
@@ -229,7 +237,7 @@ namespace mongo {
 
         /** Authorize.  Authorizes all nodes as needed
         */
-        virtual bool auth(const string &dbname, const string &username, const string &pwd, string& errmsg, bool digestPassword = true );
+        virtual bool auth(const string &dbname, const string &username, const string &pwd, string& errmsg, bool digestPassword = true, Auth::Level * level = NULL);
 
         // ----------- simple functions --------------
 
@@ -259,7 +267,7 @@ namespace mongo {
 
         // ---- callback pieces -------
 
-        virtual void say( Message &toSend, bool isRetry = false );
+        virtual void say( Message &toSend, bool isRetry = false , string* actualServer = 0);
         virtual bool recv( Message &toRecv );
         virtual void checkResponse( const char* data, int nReturned, bool* retry = NULL, string* targetHost = NULL );
 

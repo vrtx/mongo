@@ -235,11 +235,11 @@ namespace mongo {
             , _shard(begin->second->getShard())
             , _min(begin->second->getMin())
             , _max(boost::prior(end)->second->getMax()) {
-            assert( begin != end );
+            verify( begin != end );
 
             DEV while (begin != end) {
-                assert(begin->second->getManager() == _manager);
-                assert(begin->second->getShard() == _shard);
+                verify(begin->second->getManager() == _manager);
+                verify(begin->second->getShard() == _shard);
                 ++begin;
             }
         }
@@ -250,9 +250,9 @@ namespace mongo {
             , _shard(min.getShard())
             , _min(min.getMin())
             , _max(max.getMax()) {
-            assert(min.getShard() == max.getShard());
-            assert(min.getManager() == max.getManager());
-            assert(min.getMax() == max.getMin());
+            verify(min.getShard() == max.getShard());
+            verify(min.getManager() == max.getManager());
+            verify(min.getMax() == max.getMin());
         }
 
         friend ostream& operator<<(ostream& out, const ChunkRange& cr) {
@@ -314,7 +314,8 @@ namespace mongo {
 
         void getShardsForQuery( set<Shard>& shards , const BSONObj& query ) const;
         void getAllShards( set<Shard>& all ) const;
-        void getShardsForRange(set<Shard>& shards, const BSONObj& min, const BSONObj& max, bool fullKeyReq = true) const; // [min, max)
+        /** @param shards set to the shards covered by the interval [min, max], see SERVER-4791 */
+        void getShardsForRange(set<Shard>& shards, const BSONObj& min, const BSONObj& max, bool fullKeyReq = true) const;
 
         ChunkMap getChunkMap() const { return _chunkMap; }
 
@@ -323,6 +324,11 @@ namespace mongo {
          */
         bool compatibleWith( const ChunkManager& other, const Shard& shard ) const;
         bool compatibleWith( ChunkManagerPtr other, const Shard& shard ) const { if( ! other ) return false; return compatibleWith( *other, shard ); }
+
+        bool compatibleWith( const Chunk& other ) const;
+        bool compatibleWith( ChunkPtr other ) const { if( ! other ) return false; return compatibleWith( *other ); }
+
+
 
         string toString() const;
 
@@ -379,6 +385,10 @@ namespace mongo {
         friend class Chunk;
         friend class ChunkRangeManager; // only needed for CRM::assertValid()
         static AtomicUInt NextSequenceNumber;
+        
+        /** Just for testing */
+        friend class TestableChunkManager;
+        ChunkManager();
     };
 
     // like BSONObjCmp. for use as an STL comparison functor

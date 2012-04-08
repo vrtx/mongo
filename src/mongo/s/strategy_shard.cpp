@@ -17,14 +17,16 @@
 // strategy_sharded.cpp
 
 #include "pch.h"
-#include "request.h"
-#include "chunk.h"
-#include "cursors.h"
-#include "stats.h"
-#include "client.h"
 
-#include "../client/connpool.h"
-#include "../db/commands.h"
+#include "mongo/bson/util/builder.h"
+#include "mongo/client/connpool.h"
+#include "mongo/db/commands.h"
+#include "mongo/db/index.h"
+#include "mongo/s/client.h"
+#include "mongo/s/cursors.h"
+#include "mongo/s/request.h"
+#include "mongo/s/stats.h"
+#include "mongo/s/chunk.h"
 
 // error codes 8010-8040
 
@@ -52,7 +54,7 @@ namespace mongo {
             QuerySpec qSpec( (string)q.ns, q.query, q.fields, q.ntoskip, q.ntoreturn, q.queryOptions );
 
             ParallelSortClusteredCursor * cursor = new ParallelSortClusteredCursor( qSpec, CommandInfo() );
-            assert( cursor );
+            verify( cursor );
 
             // TODO:  Move out to Request itself, not strategy based
             try {
@@ -84,18 +86,23 @@ namespace mongo {
             if( cursor->isSharded() ){
                 ShardedClientCursorPtr cc (new ShardedClientCursor( q , cursor ));
 
-                if ( ! cc->sendNextBatch( r ) ) {
-                    return;
+                BufBuilder buffer( ShardedClientCursor::INIT_REPLY_BUFFER_SIZE );
+                int docCount = 0;
+                bool hasMore = cc->sendNextBatch( r, q.ntoreturn, buffer, docCount );
+
+                if ( hasMore ) {
+                    LOG(5) << "storing cursor : " << cc->getId() << endl;
+                    cursorCache.store( cc );
                 }
 
-                LOG(6) << "storing cursor : " << cc->getId() << endl;
-                cursorCache.store( cc );
+                replyToQuery( 0, r.p(), r.m(), buffer.buf(), buffer.len(), docCount,
+                        cc->getTotalSent(), hasMore ? cc->getId() : 0 );
             }
             else{
                 // TODO:  Better merge this logic.  We potentially can now use the same cursor logic for everything.
                 ShardPtr primary = cursor->getPrimary();
                 DBClientCursorPtr shardCursor = cursor->getShardCursor( *primary );
-                r.reply( *(shardCursor->getMessage()) , primary->getConnString() );
+                r.reply( *(shardCursor->getMessage()) , shardCursor->originalHost() );
             }
         }
 
@@ -143,189 +150,284 @@ namespace mongo {
                     return;
                 }
 
-                if ( cursor->sendNextBatch( r , ntoreturn ) ) {
+                // TODO: Try to match logic of mongod, where on subsequent getMore() we pull lots more data?
+                BufBuilder buffer( ShardedClientCursor::INIT_REPLY_BUFFER_SIZE );
+                int docCount = 0;
+                bool hasMore = cursor->sendNextBatch( r, ntoreturn, buffer, docCount );
+
+                if ( hasMore ) {
                     // still more data
                     cursor->accessed();
-                    return;
+                }
+                else {
+                    // we've exhausted the cursor
+                    cursorCache.remove( id );
                 }
 
-                // we've exhausted the cursor
-                cursorCache.remove( id );
+                replyToQuery( 0, r.p(), r.m(), buffer.buf(), buffer.len(), docCount,
+                        cursor->getTotalSent(), hasMore ? cursor->getId() : 0 );
             }
         }
 
-        void _insert( Request& r , DbMessage& d, ChunkManagerPtr manager ) {
-            const int flags = d.reservedField() | InsertOption_ContinueOnError; // ContinueOnError is always on when using sharding.
-            map<ChunkPtr, vector<BSONObj> > insertsForChunk; // Group bulk insert for appropriate shards
-            try {
-                while ( d.moreJSObjs() ) {
-                    BSONObj o = d.nextJsObj();
-                    if ( ! manager->hasShardKey( o ) ) {
+        void _groupInserts( ChunkManagerPtr manager, vector<BSONObj>& inserts, map<ChunkPtr,vector<BSONObj> >& insertsForChunks ){
 
-                        bool bad = true;
-
-                        if ( manager->getShardKey().partOfShardKey( "_id" ) ) {
-                            BSONObjBuilder b;
-                            b.appendOID( "_id" , 0 , true );
-                            b.appendElements( o );
-                            o = b.obj();
-                            bad = ! manager->hasShardKey( o );
-                        }
-
-                        if ( bad ) {
-                            log() << "tried to insert object with no valid shard key: " << r.getns() << "  " << o << endl;
-                            uasserted( 8011 , "tried to insert object with no valid shard key" );
-                        }
-
-                    }
-
-                    // Many operations benefit from having the shard key early in the object
-                    o = manager->getShardKey().moveToFront(o);
-                    insertsForChunk[manager->findChunk(o)].push_back(o);
+            // Redo all inserts for chunks which have changed
+            map<ChunkPtr,vector<BSONObj> >::iterator i = insertsForChunks.begin();
+            while( ! insertsForChunks.empty() && i != insertsForChunks.end() ){
+                if( ! manager->compatibleWith( i->first ) ){
+                    inserts.insert( inserts.end(), i->second.begin(), i->second.end() );
+                    insertsForChunks.erase( i++ );
                 }
-                for (map<ChunkPtr, vector<BSONObj> >::iterator it = insertsForChunk.begin(); it != insertsForChunk.end(); ++it) {
-                    ChunkPtr c = it->first;
-                    vector<BSONObj> objs = it->second;
-                    const int maxTries = 30;
-
-                    bool gotThrough = false;
-                    for ( int i=0; i<maxTries; i++ ) {
-                        try {
-                            LOG(4) << "  server:" << c->getShard().toString() << " bulk insert " << objs.size() << " documents" << endl;
-                            insert( c->getShard() , r.getns() , objs , flags);
-
-                            int bytesWritten = 0;
-                            for (vector<BSONObj>::iterator vecIt = objs.begin(); vecIt != objs.end(); ++vecIt) {
-                                r.gotInsert(); // Record the correct number of individual inserts
-                                bytesWritten += (*vecIt).objsize();
-                            }
-                            if ( r.getClientInfo()->autoSplitOk() )
-                                c->splitIfShould( bytesWritten );
-                            gotThrough = true;
-                            break;
-                        }
-                        catch ( StaleConfigException& e ) {
-                            int logLevel = i < ( maxTries / 2 );
-                            LOG( logLevel ) << "retrying bulk insert of " << objs.size() << " documents because of StaleConfigException: " << e << endl;
-                            r.reset();
-
-                            manager = r.getChunkManager();
-                            if( ! manager ) {
-                                uasserted(14804, "collection no longer sharded");
-                            }
-
-                            unsigned long long old = manager->getSequenceNumber();
-                            
-                            LOG( logLevel ) << "  sequence number - old: " << old << " new: " << manager->getSequenceNumber() << endl;
-                        }
-                        sleepmillis( i * 20 );
-                    }
-
-                    assert( inShutdown() || gotThrough ); // not caught below
-                }
-            } catch (const UserException&){
-                if (!d.moreJSObjs()){
-                    throw;
-                }
-                // Ignore and keep going. ContinueOnError is implied with sharding.
+                else ++i;
             }
+
+            // Figure out inserts we haven't chunked yet
+            for( vector<BSONObj>::iterator i = inserts.begin(); i != inserts.end(); ++i ){
+
+                BSONObj o = *i;
+
+                if ( ! manager->hasShardKey( o ) ) {
+
+                    bool bad = true;
+
+                    // Add autogenerated _id to item and see if we now have a shard key
+                    if ( manager->getShardKey().partOfShardKey( "_id" ) ) {
+                        BSONObjBuilder b;
+                        b.appendOID( "_id" , 0 , true );
+                        b.appendElements( o );
+                        o = b.obj();
+                        bad = ! manager->hasShardKey( o );
+                    }
+
+                    if ( bad ) {
+                        // TODO:
+                        log() << "tried to insert object with no valid shard key for " << manager->getShardKey() << " : " << o << endl;
+                        uassert( 8011, str::stream() << "tried to insert object with no valid shard key for " << manager->getShardKey().toString() << " : " << o.toString(), false );
+                    }
+                }
+
+                // Many operations benefit from having the shard key early in the object
+                o = manager->getShardKey().moveToFront(o);
+                insertsForChunks[manager->findChunk(o)].push_back(o);
+            }
+
+            inserts.clear();
+        }
+
+        void _insert( Request& r , DbMessage& d, ChunkManagerPtr manager, vector<BSONObj>& insertsRemaining, map<ChunkPtr, vector<BSONObj> > insertsForChunks, int retries = 0 ) {
+
+            uassert( 16055, str::stream() << "too many retries during bulk insert, " << insertsRemaining.size() << " inserts remaining", retries < 30 );
+            uassert( 16056, str::stream() << "shutting down server during bulk insert, " << insertsRemaining.size() << " inserts remaining", ! inShutdown() );
+
+            const int flags = d.reservedField() | InsertOption_ContinueOnError; // ContinueOnError is always on when using sharding.
+
+            _groupInserts( manager, insertsRemaining, insertsForChunks );
+
+            while( ! insertsForChunks.empty() ){
+
+                ChunkPtr c = insertsForChunks.begin()->first;
+                vector<BSONObj>& objs = insertsForChunks.begin()->second;
+
+                const Shard& shard = c->getShard();
+                const string& ns = r.getns();
+
+                ShardConnection dbcon( shard, ns, manager );
+
+                try {
+
+                    LOG(4) << "  server:" << c->getShard().toString() << " bulk insert " << objs.size() << " documents" << endl;
+
+                    // Taken from single-shard bulk insert, should not need multiple methods in future
+                    // insert( c->getShard() , r.getns() , objs , flags);
+
+                    // It's okay if the version is set here, an exception will be thrown if the version is incompatible
+                    dbcon.setVersion();
+
+                    dbcon->insert( ns , objs , flags);
+                    // TODO: Option for safe inserts here - can then use this for all inserts
+
+                    dbcon.done();
+
+                    int bytesWritten = 0;
+                    for (vector<BSONObj>::iterator vecIt = objs.begin(); vecIt != objs.end(); ++vecIt) {
+                        r.gotInsert(); // Record the correct number of individual inserts
+                        bytesWritten += (*vecIt).objsize();
+                    }
+
+                    // TODO: The only reason we're grouping by chunks here is for auto-split, more efficient
+                    // to track this separately and bulk insert to shards
+                    if ( r.getClientInfo()->autoSplitOk() )
+                        c->splitIfShould( bytesWritten );
+
+                }
+                catch ( StaleConfigException& e ) {
+                    // Cleanup the connection
+                    dbcon.done();
+
+                    // Assume the inserts did *not* succeed, so we don't want to erase them
+
+                    int logLevel = retries < 2;
+                    LOG( logLevel ) << "retrying bulk insert of " << objs.size() << " documents to chunk " << c << " because of StaleConfigException: " << e << endl;
+
+                    if( retries > 2 ){
+                        versionManager.forceRemoteCheckShardVersionCB( e.getns() );
+                    }
+
+                    // TODO:  Replace with actual chunk handling code, simplify request
+                    r.reset();
+                    manager = r.getChunkManager();
+
+                    if( ! manager ) {
+                        // TODO : We can probably handle this better?
+                        uasserted( 14804, "collection no longer sharded" );
+                    }
+                    // End TODO
+
+                    // We may need to regroup at least some of our inserts since our chunk manager may have changed
+                    _insert( r, d, manager, insertsRemaining, insertsForChunks, retries + 1 );
+                    return;
+                }
+                catch( UserException& ){
+                    // Unexpected exception, so don't clean up the conn
+                    dbcon.kill();
+
+                    // These inserts won't be retried, as something weird happened here
+                    insertsForChunks.erase( insertsForChunks.begin() );
+
+                    // Throw if this is the last chunk bulk-inserted to
+                    if( insertsForChunks.empty() ){
+                        throw;
+                    }
+                }
+
+                insertsForChunks.erase( insertsForChunks.begin() );
+            }
+        }
+
+        /**
+         * Semantics for insert are ContinueOnError - to match mongod semantics :
+         * 1) Error is thrown immediately for corrupt objects
+         * 2) Error is thrown only for UserExceptions during the insert process, if last obj had error that's thrown
+         */
+        void _insert( Request& r , DbMessage& d, ChunkManagerPtr manager ){
+
+            vector<BSONObj> insertsRemaining;
+            while ( d.moreJSObjs() ){
+                insertsRemaining.push_back( d.nextJsObj() );
+            }
+
+            map<ChunkPtr, vector<BSONObj> > insertsForChunks; // Map for bulk inserts to diff chunks
+
+            _insert( r, d, manager, insertsRemaining, insertsForChunks );
         }
 
         void _update( Request& r , DbMessage& d, ChunkManagerPtr manager ) {
-            int flags = d.pullInt();
-
-            BSONObj query = d.nextJsObj();
-            uassert( 13506 ,  "$atomic not supported sharded" , query["$atomic"].eoo() );
+            // const details of the request
+            const int flags = d.pullInt();
+            const BSONObj query = d.nextJsObj();
             uassert( 10201 ,  "invalid update" , d.moreJSObjs() );
-            BSONObj toupdate = d.nextJsObj();
-            BSONObj chunkFinder = query;
+            const BSONObj toupdate = d.nextJsObj();
+            const bool upsert = flags & UpdateOption_Upsert;
+            const bool multi = flags & UpdateOption_Multi;
 
-            bool upsert = flags & UpdateOption_Upsert;
-            bool multi = flags & UpdateOption_Multi;
+            uassert( 13506 ,  "$atomic not supported sharded" , !query.hasField("$atomic") );
 
-            if (upsert) {
-                uassert(8012, "can't upsert something without valid shard key",
-                        (manager->hasShardKey(toupdate) ||
-                         (toupdate.firstElementFieldName()[0] == '$' && manager->hasShardKey(query))));
+            // This are used for routing the request and are listed in order of priority
+            // If one is empty, go to next. If both are empty, send to all shards
+            BSONObj key; // the exact shard key
+            BSONObj chunkFinder; // a query listing
 
-                BSONObj key = manager->getShardKey().extractKey(query);
-                BSONForEach(e, key) {
-                    uassert(13465, "shard key in upsert query must be an exact match", getGtLtOp(e) == BSONObj::Equality);
+            const ShardKeyPattern& sk = manager->getShardKey();
+
+            if (toupdate.firstElementFieldName()[0] == '$') { // $op style update
+                chunkFinder = query;
+
+                BSONForEach(op, toupdate){
+                    // this block is all about validation
+                    uassert(16064, "can't mix $operator style update with non-$op fields", op.fieldName()[0] == '$');
+                    if (op.type() != Object)
+                        continue;
+                    BSONForEach(field, op.embeddedObject()){
+                        if (sk.partOfShardKey(field.fieldName()))
+                            uasserted(13123, str::stream() << "Can't modify shard key's value. field: " << field
+                                                            << " collection: " << manager->getns());
+                    }
+                }
+
+                if (sk.hasShardKey(query))
+                    key = sk.extractKey(query);
+
+                if (!multi){
+                    // non-multi needs full key or _id. The _id exception because that guarantees
+                    // that only one object will be updated even if we send to all shards
+                    // Also, db.foo.update({_id:'asdf'}, {$inc:{a:1}}) is a common pattern that we
+                    // need to allow, even if it is less efficient than if the shard key were supplied.
+                    const bool hasId = query.hasField("_id") && getGtLtOp(query["_id"]) == BSONObj::Equality;
+                    uassert(8013, "For non-multi updates, must have _id or full shard key in query", hasId || !key.isEmpty());
                 }
             }
+            else { // replace style update
+                uassert(16065, "multi-updates require $ops rather than replacement object", !multi);
 
-            bool save = false;
-            if ( ! manager->hasShardKey( query ) ) {
-                if ( multi ) {
+                uassert(12376, str::stream() << "full shard key must be in update object for collection: " << manager->getns(),
+                        sk.hasShardKey(toupdate));
+
+                key = sk.extractKey(toupdate);
+
+                BSONForEach(field, query){
+                    if (!sk.partOfShardKey(field.fieldName()) || getGtLtOp(field) != BSONObj::Equality)
+                        continue;
+                    uassert(8014, str::stream() << "cannot modify shard key for collection: " << manager->getns(),
+                            field == key[field.fieldName()]);
                 }
-                else if ( strcmp( query.firstElementFieldName() , "_id" ) || query.nFields() != 1 ) {
-                    log() << "Query " << query << endl;
-                    throw UserException( 8013 , "can't do non-multi update with query that doesn't have a valid shard key" );
-                }
-                else {
-                    save = true;
-                    chunkFinder = toupdate;
-                }
+
             }
+            
+            const int LEFT_START = 5;
+            int left = LEFT_START;
+            while ( true ) {
+                try {
+                    Shard shard;
+                    ChunkPtr c;
+                    if ( key.isEmpty() ) {
+                        uassert(8012, "can't upsert something without full valid shard key", !upsert);
 
-
-            if ( ! save ) {
-                if ( toupdate.firstElementFieldName()[0] == '$' ) {
-                    BSONObjIterator ops(toupdate);
-                    while(ops.more()) {
-                        BSONElement op(ops.next());
-                        if (op.type() != Object)
-                            continue;
-                        BSONObjIterator fields(op.embeddedObject());
-                        while(fields.more()) {
-                            const string field = fields.next().fieldName();
-                            uassert(13123,
-                                    str::stream() << "Can't modify shard key's value field" << field
-                                    << " for collection: " << manager->getns(),
-                                    ! manager->getShardKey().partOfShardKey(field));
+                        set<Shard> shards;
+                        manager->getShardsForQuery(shards, query);
+                        if (shards.size() == 1) {
+                            shard = *shards.begin();
+                        }
+                        else{
+                            // data could be on more than one shard. must send to all
+                            int * x = (int*)(r.d().afterNS());
+                            x[0] |= UpdateOption_Broadcast; // this means don't check shard version in mongod
+                            broadcastWrite(dbUpdate, r);
+                            return;
                         }
                     }
-                }
-                else if ( manager->hasShardKey( toupdate ) ) {
-                    uassert( 8014,
-                             str::stream() << "cannot modify shard key for collection: " << manager->getns(),
-                             manager->getShardKey().compare( query , toupdate ) == 0 );
-                }
-                else {
-                    uasserted(12376,
-                              str::stream() << "valid shard key must be in update object for collection: " << manager->getns() );
-                }
-            }
+                    else {
+                        uassert(16066, "", sk.hasShardKey(key));
+                        c = manager->findChunk( key );
+                        shard = c->getShard();
+                    }
 
-            if ( multi ) {
-                set<Shard> shards;
-                manager->getShardsForQuery( shards , chunkFinder );
-                int * x = (int*)(r.d().afterNS());
-                x[0] |= UpdateOption_Broadcast;
-                for ( set<Shard>::iterator i=shards.begin(); i!=shards.end(); i++) {
-                    doWrite( dbUpdate , r , *i , false );
+                    verify(shard != Shard());
+                    doWrite( dbUpdate , r , shard );
+
+                    if ( c &&r.getClientInfo()->autoSplitOk() )
+                        c->splitIfShould( d.msg().header()->dataLen() );
+
+                    return;
                 }
-            }
-            else {
-                int left = 5;
-                while ( true ) {
-                    try {
-                        ChunkPtr c = manager->findChunk( chunkFinder );
-                        doWrite( dbUpdate , r , c->getShard() );
-                        if ( r.getClientInfo()->autoSplitOk() )
-                            c->splitIfShould( d.msg().header()->dataLen() );
-                        break;
-                    }
-                    catch ( StaleConfigException& e ) {
-                        if ( left <= 0 )
-                            throw e;
-                        left--;
-                        log() << "update will be retried b/c sharding config info is stale, "
-                              << " left:" << left << " ns: " << r.getns() << " query: " << query << endl;
-                        r.reset();
-                        manager = r.getChunkManager();
-                        uassert(14806, "collection no longer sharded", manager);
-                    }
+                catch ( StaleConfigException& e ) {
+                    if ( left <= 0 )
+                        throw e;
+                    log( left == LEFT_START ) << "update will be retried b/c sharding config info is stale, "
+                                              << " left:" << left - 1 << " ns: " << r.getns() << " query: " << query << endl;
+                    left--;
+                    r.reset();
+                    manager = r.getChunkManager();
+                    uassert(14806, "collection no longer sharded", manager);
                 }
             }
         }
@@ -338,51 +440,66 @@ namespace mongo {
             uassert( 10203 ,  "bad delete message" , d.moreJSObjs() );
             BSONObj pattern = d.nextJsObj();
             uassert( 13505 ,  "$atomic not supported sharded" , pattern["$atomic"].eoo() );
-
-            set<Shard> shards;
-            int left = 5;
-
+            
+            const int LEFT_START = 5;
+            int left = LEFT_START;
             while ( true ) {
                 try {
+                    set<Shard> shards;
                     manager->getShardsForQuery( shards , pattern );
                     LOG(2) << "delete : " << pattern << " \t " << shards.size() << " justOne: " << justOne << endl;
-                    if ( shards.size() == 1 ) {
-                        doWrite( dbDelete , r , *shards.begin() );
+
+                    if ( shards.size() != 1 ) {
+                        // data could be on more than one shard. must send to all
+                        if ( justOne && ! pattern.hasField( "_id" ) )
+                            throw UserException( 8015 , "can only delete with a non-shard key pattern if can delete as many as we find" );
+
+                        int * x = (int*)(r.d().afterNS());
+                        x[0] |= RemoveOption_Broadcast; // this means don't check shard version in mongod
+                        broadcastWrite(dbUpdate, r);
                         return;
                     }
-                    break;
+
+                    doWrite( dbDelete , r , *shards.begin() );
+                    return;
                 }
                 catch ( StaleConfigException& e ) {
                     if ( left <= 0 )
                         throw e;
+                    log( left == LEFT_START ) << "delete will be retried b/c of StaleConfigException, "
+                                              << " left:" << left - 1 << " ns: " << r.getns() << " patt: " << pattern << endl;
                     left--;
-                    log() << "delete failed b/c of StaleConfigException, retrying "
-                          << " left:" << left << " ns: " << r.getns() << " patt: " << pattern << endl;
                     r.reset();
-                    shards.clear();
                     manager = r.getChunkManager();
                     uassert(14805, "collection no longer sharded", manager);
                 }
             }
-
-            if ( justOne && ! pattern.hasField( "_id" ) )
-                throw UserException( 8015 , "can only delete with a non-shard key pattern if can delete as many as we find" );
-
-            for ( set<Shard>::iterator i=shards.begin(); i!=shards.end(); i++) {
-                int * x = (int*)(r.d().afterNS());
-                x[0] |= RemoveOption_Broadcast;
-                doWrite( dbDelete , r , *i , false );
-            }
         }
-
+        
         virtual void writeOp( int op , Request& r ) {
 
-            // TODO:  Handle stale config exceptions here from coll being dropped or sharded during op
-            // for now has same semantics as legacy request
-            ChunkManagerPtr info = r.getChunkManager();
+            ChunkManagerPtr info;
+            ShardPtr primary;
 
-            if( ! info ){
-                SINGLE->writeOp( op, r );
+            r.getConfig()->getChunkManagerOrPrimary( r.getns(), info, primary );
+
+            if( primary ){
+
+                const char *ns = r.getns();
+
+                if ( r.isShardingEnabled() &&
+                        strstr( ns , ".system.indexes" ) == strchr( ns , '.' ) &&
+                        strchr( ns , '.' ) )
+                {
+                    LOG(1) << " .system.indexes write for: " << ns << endl;
+                    handleIndexWrite( op , r );
+                    return;
+                }
+
+                LOG(3) << "single write: " << ns << endl;
+                SINGLE->doWrite( op , r , *primary );
+                r.gotInsert(); // Won't handle mulit-insert correctly. Not worth parsing the request.
+
                 return;
             }
             else{
@@ -406,6 +523,51 @@ namespace mongo {
                 }
                 return;
             }
+        }
+
+        void handleIndexWrite( int op , Request& r ) {
+
+            DbMessage& d = r.d();
+
+            if ( op == dbInsert ) {
+                while( d.moreJSObjs() ) {
+                    BSONObj o = d.nextJsObj();
+                    const char * ns = o["ns"].valuestr();
+                    if ( r.getConfig()->isSharded( ns ) ) {
+                        BSONObj newIndexKey = o["key"].embeddedObjectUserCheck();
+
+                        uassert( 10205 ,  (string)"can't use unique indexes with sharding  ns:" + ns +
+                                 " key: " + o["key"].embeddedObjectUserCheck().toString() ,
+                                 IndexDetails::isIdIndexPattern( newIndexKey ) ||
+                                 ! o["unique"].trueValue() ||
+                                 r.getConfig()->getChunkManager( ns )->getShardKey().isPrefixOf( newIndexKey ) );
+
+                        ChunkManagerPtr cm = r.getConfig()->getChunkManager( ns );
+                        verify( cm );
+
+                        set<Shard> shards;
+                        cm->getAllShards(shards);
+                        for (set<Shard>::const_iterator it=shards.begin(), end=shards.end(); it != end; ++it)
+                            SINGLE->doWrite( op , r , *it );
+                    }
+                    else {
+                        SINGLE->doWrite( op , r , r.primaryShard() );
+                    }
+                    r.gotInsert();
+                }
+            }
+            else if ( op == dbUpdate ) {
+                throw UserException( 8050 , "can't update system.indexes" );
+            }
+            else if ( op == dbDelete ) {
+                // TODO
+                throw UserException( 8051 , "can't delete indexes on sharded collection yet" );
+            }
+            else {
+                log() << "handleIndexWrite invalid write op: " << op << endl;
+                throw UserException( 8052 , "handleIndexWrite invalid write op" );
+            }
+
         }
 
     };

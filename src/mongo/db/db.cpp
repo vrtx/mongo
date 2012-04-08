@@ -52,14 +52,14 @@
 # include <sys/file.h>
 #endif
 
+#include <fstream>
+#include <boost/filesystem/operations.hpp>
+
 namespace mongo {
 
     namespace dur { 
         extern unsigned long long DataLimitPerJournalFile;
     }
-
-    /* only off if --nocursors which is for debugging. */
-    extern bool useCursors;
 
     /* only off if --nohints */
     extern bool useHints;
@@ -73,6 +73,14 @@ namespace mongo {
     void setupSignals( bool inFork );
     void startReplication();
     void exitCleanly( ExitCode code );
+
+#ifdef _WIN32
+    ntServiceDefaultStrings defaultServiceStrings = {
+        L"MongoDB",
+        L"Mongo DB",
+        L"Mongo DB Server"
+    };
+#endif
 
     CmdLine cmdLine;
     static bool scriptingEnabled = true;
@@ -91,7 +99,7 @@ namespace mongo {
 
     struct MyStartupTests {
         MyStartupTests() {
-            assert( sizeof(OID) == 12 );
+            verify( sizeof(OID) == 12 );
         }
     } mystartupdbcpp;
 
@@ -106,12 +114,12 @@ namespace mongo {
         sleepsecs(1);
         unsigned n = 0;
         auto f = [&n](const BSONObj& o) {
-            assert( o.valid() );
+            verify( o.valid() );
             //cout << o << endl;
             n++;
             bool testClosingSocketOnError = false;
             if( testClosingSocketOnError )
-                assert(false);
+                verify(false);
         };
         DBClientConnection db(false);
         db.connect("localhost");
@@ -160,7 +168,8 @@ namespace mongo {
     public:
         virtual void connected( AbstractMessagingPort* p ) {
             Client& c = Client::initThread("conn", p);
-            c.getAuthenticationInfo()->isLocalHost = p->remote().isLocalHost();
+            if( p->remote().isLocalHost() )
+                c.getAuthenticationInfo()->setIsALocalHostConnectionWithSpecialAuthPowers();
         }
 
         virtual void process( Message& m , AbstractMessagingPort* port , LastError * le) {
@@ -182,7 +191,7 @@ namespace mongo {
                         QueryResult *qr = (QueryResult *) header;
                         long long cursorid = qr->cursorId;
                         if( cursorid ) {
-                            assert( dbresponse.exhaust && *dbresponse.exhaust != 0 );
+                            verify( dbresponse.exhaust && *dbresponse.exhaust != 0 );
                             string ns = dbresponse.exhaust; // before reset() free's it...
                             m.reset();
                             BufBuilder b(512);
@@ -238,8 +247,8 @@ namespace mongo {
         static DBDirectClient db;
 
         if ( h->version == 4 && h->versionMinor == 4 ) {
-            assert( PDFILE_VERSION == 4 );
-            assert( PDFILE_VERSION_MINOR == 5 );
+            verify( PDFILE_VERSION == 4 );
+            verify( PDFILE_VERSION_MINOR == 5 );
 
             list<string> colls = db.getCollectionNames( dbName );
             for ( list<string>::iterator i=colls.begin(); i!=colls.end(); i++) {
@@ -268,10 +277,10 @@ namespace mongo {
         Client::GodScope gs;
         log(1) << "enter repairDatabases (to check pdfile version #)" << endl;
 
-        //assert(checkNsFilesOnLoad);
+        //verify(checkNsFilesOnLoad);
         checkNsFilesOnLoad = false; // we are mainly just checking the header - don't scan the whole .ns file for every db here.
 
-        dblock lk;
+        Lock::GlobalWrite lk;
         vector< string > dbNames;
         getDatabaseNames( dbNames );
         for ( vector< string >::iterator i = dbNames.begin(); i != dbNames.end(); ++i ) {
@@ -296,7 +305,7 @@ namespace mongo {
                     // QUESTION: Repair even if file format is higher version than code?
                     log() << "\t starting upgrade" << endl;
                     string errmsg;
-                    assert( doDBUpgrade( dbName , errmsg , h ) );
+                    verify( doDBUpgrade( dbName , errmsg , h ) );
                 }
                 else {
                     log() << "\t Not upgrading, exiting" << endl;
@@ -335,6 +344,7 @@ namespace mongo {
     }
 
     void checkIfReplMissingFromCommandLine() {
+        writelock lk; // _openAllFiles is false at this point, so this is helpful for the query below to work as you can't open files when readlocked
         if( !cmdLine.usingReplSets() ) { 
             Client::GodScope gs;
             DBDirectClient c;
@@ -354,10 +364,15 @@ namespace mongo {
         Client::GodScope gs;
         vector< string > toDelete;
         DBDirectClient cli;
-        auto_ptr< DBClientCursor > c = cli.query( "local.system.namespaces", Query( fromjson( "{name:/^local.temp./}" ) ) );
-        while( c->more() ) {
-            BSONObj o = c->next();
-            toDelete.push_back( o.getStringField( "name" ) );
+        vector< string > dbNames;
+        getDatabaseNames( dbNames );
+        for (vector<string>::const_iterator it(dbNames.begin()), end(dbNames.end()); it != end; ++it){
+            const string coll = *it + ".system.namespaces";
+            scoped_ptr< DBClientCursor > c (cli.query(coll, Query( fromjson( "{'options.temp': {$in: [true, 1]}}" ) ) ));
+            while( c->more() ) {
+                BSONObj o = c->next();
+                toDelete.push_back( o.getStringField( "name" ) );
+            }
         }
         for( vector< string >::iterator i = toDelete.begin(); i != toDelete.end(); ++i ) {
             log() << "Dropping old temporary collection: " << *i << endl;
@@ -463,11 +478,11 @@ namespace mongo {
         }
 
         acquirePathLock(forceRepair);
-        remove_all( dbpath + "/_tmp/" );
+        boost::filesystem::remove_all( dbpath + "/_tmp/" );
 
         FileAllocator::get()->start();
 
-        MONGO_BOOST_CHECK_EXCEPTION_WITH_MSG( clearTmpFiles(), "clear tmp files" );
+        MONGO_ASSERT_ON_EXCEPTION_WITH_MSG( clearTmpFiles(), "clear tmp files" );
 
         dur::startup();
 
@@ -507,6 +522,14 @@ namespace mongo {
 #ifndef _WIN32
         CmdLine::launchOk();
 #endif
+
+        if( !noauth ) { 
+            // open admin db in case we need to use it later. TODO this is not the right way to 
+            // resolve this. 
+            writelock lk;
+            Client::Context c("admin",dbpath,false);
+        }
+
         listen(listenPort);
 
         // listen() will return when exit code closes its socket.
@@ -540,6 +563,7 @@ namespace mongo {
 #if defined(_WIN32)
     bool initService() {
         ServiceController::reportStatus( SERVICE_RUNNING );
+        log() << "Service running" << endl;
         initAndListen( cmdLine.port );
         return true;
     }
@@ -550,8 +574,6 @@ namespace mongo {
 using namespace mongo;
 
 #include <boost/program_options.hpp>
-#undef assert
-#define assert MONGO_assert
 
 namespace po = boost::program_options;
 
@@ -591,10 +613,10 @@ int main(int argc, char* argv[]) {
     ("dbpath", po::value<string>() , "directory for datafiles")
     ("diaglog", po::value<int>(), "0=off 1=W 2=R 3=both 7=W+some reads")
     ("directoryperdb", "each database will be stored in a separate directory")
-    ("journal", "enable journaling")
-    ("journalOptions", po::value<int>(), "journal diagnostic options")
-    ("journalCommitInterval", po::value<unsigned>(), "how often to group/batch commit (ms)")
     ("ipv6", "enable IPv6 support (disabled by default)")
+    ("journal", "enable journaling")
+    ("journalCommitInterval", po::value<unsigned>(), "how often to group/batch commit (ms)")
+    ("journalOptions", po::value<int>(), "journal diagnostic options")
     ("jsonp","allow JSONP access via http (has security implications)")
     ("noauth", "run without security")
     ("nohttpinterface", "disable http interface")
@@ -605,15 +627,15 @@ int main(int argc, char* argv[]) {
     ("nssize", po::value<int>()->default_value(16), ".ns file size (in MB) for new databases")
     ("profile",po::value<int>(), "0=off 1=slow, 2=all")
     ("quota", "limits each database to a certain number of files (8 default)")
-    ("quotaFiles", po::value<int>(), "number of files allower per db, requires --quota")
-    ("rest","turn on simple rest api")
+    ("quotaFiles", po::value<int>(), "number of files allowed per db, requires --quota")
     ("repair", "run repair on all dbs")
     ("repairpath", po::value<string>() , "root directory for repair files - defaults to dbpath" )
-    ("slowms",po::value<int>(&cmdLine.slowMS)->default_value(100), "value of slow for profile and console log" )
-    ("smallfiles", "use a smaller default file size")
+    ("rest","turn on simple rest api")
 #if defined(__linux__)
     ("shutdown", "kill a running server (for init scripts)")
 #endif
+    ("slowms",po::value<int>(&cmdLine.slowMS)->default_value(100), "value of slow for profile and console log" )
+    ("smallfiles", "use a smaller default file size")
     ("syncdelay",po::value<double>(&cmdLine.syncdelay)->default_value(60), "seconds between disk syncs (0=never, but not recommended)")
     ("sysinfo", "print some diagnostic system information")
     ("upgrade", "upgrade db if needed")
@@ -653,7 +675,6 @@ int main(int argc, char* argv[]) {
     ("cacheSize", po::value<long>(), "cache size (in MB) for rec store")
     ("nodur", "disable journaling")
     // things we don't want people to use
-    ("nocursors", "diagnostic/debugging option that turns off cursors DO NOT USE IN PRODUCTION")
     ("nohints", "ignore query hints")
     ("nopreallocj", "don't preallocate journal files")
     ("dur", "enable journaling") // old name for --journal
@@ -663,7 +684,6 @@ int main(int argc, char* argv[]) {
     ("arbiter", "DEPRECATED")
     ("opIdMem", "DEPRECATED")
     ;
-
 
     positional_options.add("command", 3);
     visible_options.add(general_options);
@@ -732,9 +752,6 @@ int main(int argc, char* argv[]) {
                 dbpath = cmdLine.cwd + "/" + dbpath;
             }
         }
-        else {
-            dbpath = "/data/db/";
-        }
 #ifdef _WIN32
         if (dbpath.size() > 1 && dbpath[dbpath.size()-1] == '/') {
             // size() check is for the unlikely possibility of --dbpath "/"
@@ -796,9 +813,6 @@ int main(int argc, char* argv[]) {
                 dbexit( EXIT_BADOPTIONS );
             }
         }
-        if (params.count("nocursors")) {
-            useCursors = false;
-        }
         if (params.count("nohints")) {
             useHints = false;
         }
@@ -823,7 +837,7 @@ int main(int argc, char* argv[]) {
         }
         if (params.count("smallfiles")) {
             cmdLine.smallfiles = true;
-            assert( dur::DataLimitPerJournalFile >= 128 * 1024 * 1024 );
+            verify( dur::DataLimitPerJournalFile >= 128 * 1024 * 1024 );
             dur::DataLimitPerJournalFile = 128 * 1024 * 1024;
         }
         if (params.count("diaglog")) {
@@ -899,7 +913,7 @@ int main(int argc, char* argv[]) {
                 dbexit( EXIT_BADOPTIONS );
             }
             lenForNewNsFiles = x * 1024 * 1024;
-            assert(lenForNewNsFiles > 0);
+            verify(lenForNewNsFiles > 0);
         }
         if (params.count("oplogSize")) {
             long long x = params["oplogSize"].as<int>();
@@ -913,7 +927,7 @@ int main(int argc, char* argv[]) {
                 dbexit( EXIT_BADOPTIONS );
             }
             cmdLine.oplogSize = x * 1024 * 1024;
-            assert(cmdLine.oplogSize > 0);
+            verify(cmdLine.oplogSize > 0);
         }
         if (params.count("cacheSize")) {
             long x = params["cacheSize"].as<long>();
@@ -943,6 +957,8 @@ int main(int argc, char* argv[]) {
         }
         if ( params.count("configsvr" ) ) {
             cmdLine.configsvr = true;
+            cmdLine.smallfiles = true; // config server implies small files
+            dur::DataLimitPerJournalFile = 128 * 1024 * 1024;
             if (cmdLine.usingReplSets() || replSettings.master || replSettings.slave) {
                 log() << "replication should not be enabled on a config server" << endl;
                 ::exit(-1);
@@ -1065,11 +1081,15 @@ int main(int argc, char* argv[]) {
 #endif
 
 #if defined(_WIN32)
-        if (serviceParamsCheck( params, dbpath, argc, argv )) {
-            return 0;
+        vector<string> disallowedOptions;
+        if (serviceParamsCheck( params, dbpath, defaultServiceStrings, disallowedOptions, argc, argv )) {
+            return 0;   // this means that we are running as a service, and we won't
+                        // reach this statement until initService() has run and returned,
+                        // but it usually exits directly so we never actually get here
         }
+        // if we reach here, then we are not running as a service.  service installation
+        // exits directly and so never reaches here either.
 #endif
-
 
         if (sizeof(void*) == 4 && !journalExplicit){
             // trying to make this stand out more like startup warnings
@@ -1137,28 +1157,29 @@ namespace mongo {
         if ( signal == SIGSEGV || signal == SIGBUS ) {
             oss << " access";
         } else {
-            oss << " operation";   
+            oss << " operation";
         }
-        oss << " at address: " << siginfo->si_addr << endl;
+        oss << " at address: " << siginfo->si_addr << " from thread: " << getThreadName() << endl;
         rawOut( oss.str() );
-        abruptQuit( signal );   
+        abruptQuit( signal );
     }
-        
+
     sigset_t asyncSignals;
     // The above signals will be processed by this thread only, in order to
     // ensure the db and log mutexes aren't held.
     void interruptThread() {
-        int x;
-        sigwait( &asyncSignals, &x );
-        log() << "got kill or ctrl c or hup signal " << x << " (" << strsignal( x ) << "), will terminate after current cmd ends" << endl;
+        int actualSignal;
+        sigwait( &asyncSignals, &actualSignal );
+        log() << "got signal " << actualSignal << " (" << strsignal( actualSignal )
+              << "), will terminate after current cmd ends" << endl;
         Client::initThread( "interruptThread" );
-        exitCleanly( EXIT_KILL );
+        exitCleanly( EXIT_CLEAN );
     }
 
     // this will be called in certain c++ error cases, for example if there are two active
     // exceptions
     void myterminate() {
-        rawOut( "terminate() called, printing stack:" );
+        rawOut( "terminate() called, printing stack (if implemented for platform):" );
         printStackTrace();
         ::abort();
     }
@@ -1179,34 +1200,34 @@ namespace mongo {
         sigemptyset( &addrSignals.sa_mask );
         addrSignals.sa_flags = SA_SIGINFO;
        
-        assert( sigaction(SIGSEGV, &addrSignals, 0) == 0 );
-        assert( sigaction(SIGBUS, &addrSignals, 0) == 0 );
-        assert( sigaction(SIGILL, &addrSignals, 0) == 0 );
-        assert( sigaction(SIGFPE, &addrSignals, 0) == 0 );
+        verify( sigaction(SIGSEGV, &addrSignals, 0) == 0 );
+        verify( sigaction(SIGBUS, &addrSignals, 0) == 0 );
+        verify( sigaction(SIGILL, &addrSignals, 0) == 0 );
+        verify( sigaction(SIGFPE, &addrSignals, 0) == 0 );
         
-        assert( signal(SIGABRT, abruptQuit) != SIG_ERR );
-        assert( signal(SIGQUIT, abruptQuit) != SIG_ERR );
-        assert( signal(SIGPIPE, pipeSigHandler) != SIG_ERR );
+        verify( signal(SIGABRT, abruptQuit) != SIG_ERR );
+        verify( signal(SIGQUIT, abruptQuit) != SIG_ERR );
+        verify( signal(SIGPIPE, pipeSigHandler) != SIG_ERR );
 
         setupSIGTRAPforGDB();
 
         sigemptyset( &asyncSignals );
 
         if ( inFork )
-            assert( signal( SIGHUP , setupSignals_ignoreHelper ) != SIG_ERR );
+            verify( signal( SIGHUP , setupSignals_ignoreHelper ) != SIG_ERR );
         else
             sigaddset( &asyncSignals, SIGHUP );
 
         sigaddset( &asyncSignals, SIGINT );
         sigaddset( &asyncSignals, SIGTERM );
-        assert( pthread_sigmask( SIG_SETMASK, &asyncSignals, 0 ) == 0 );
+        verify( pthread_sigmask( SIG_SETMASK, &asyncSignals, 0 ) == 0 );
         boost::thread it( interruptThread );
 
         set_terminate( myterminate );
         set_new_handler( my_new_handler );
     }
 
-#else
+#else   // WIN32
     void consoleTerminate( const char* controlCodeName ) {
         Client::initThread( "consoleTerminate" );
         log() << "got " << controlCodeName << ", will terminate after current cmd ends" << endl;
@@ -1248,29 +1269,26 @@ namespace mongo {
     }
 
     LPTOP_LEVEL_EXCEPTION_FILTER filtLast = 0;
-    ::HANDLE standardOut = GetStdHandle(STD_OUTPUT_HANDLE);
-    LONG WINAPI exceptionFilter(struct _EXCEPTION_POINTERS *ExceptionInfo) { 
-        {
-            // given the severity of the event we write to console in addition to the --logFile
-            // (rawOut writes to the logfile, if a special one were specified)
-            DWORD written;
-            WriteFile(standardOut, "unhandled windows exception\n", 20, &written, 0);
-            FlushFileBuffers(standardOut);
-        }
 
-        DWORD ec = ExceptionInfo->ExceptionRecord->ExceptionCode;
-        if( ec == EXCEPTION_ACCESS_VIOLATION ) {
-            rawOut("access violation");
-        } 
-        else {
-            rawOut("unhandled windows exception");
-            char buf[64];
-            strcpy(buf, "ec=0x");
-            _ui64toa(ec, buf+5, 16);
-            rawOut(buf);
-        }
+    LONG WINAPI exceptionFilter( struct _EXCEPTION_POINTERS *excPointers ) {
+        char exceptionString[128];
+        sprintf_s( exceptionString, sizeof( exceptionString ),
+                ( excPointers->ExceptionRecord->ExceptionCode == EXCEPTION_ACCESS_VIOLATION ) ?
+                "(access violation)" : "0x%08X", excPointers->ExceptionRecord->ExceptionCode );
+        char addressString[128];
+        sprintf_s( addressString, sizeof( addressString ), "0x%p",
+                 excPointers->ExceptionRecord->ExceptionAddress );
+        log() << "*** unhandled exception " << exceptionString <<
+                " at " << addressString << ", terminating" << endl;
+
+        // In release builds, let dbexit() try to shut down cleanly
+#if !defined(_DEBUG)
+        dbexit( EXIT_UNCAUGHT, "unhandled exception" );
+#endif
+
+        // In debug builds, give debugger a chance to run
         if( filtLast ) 
-            return filtLast(ExceptionInfo);
+            return filtLast( excPointers );
         return EXCEPTION_EXECUTE_HANDLER;
     }
 
@@ -1304,6 +1322,6 @@ namespace mongo {
         _set_purecall_handler( myPurecallHandler );
     }
 
-#endif
+#endif  // if !defined(_WIN32)
 
 } // namespace mongo

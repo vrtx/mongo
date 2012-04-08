@@ -67,6 +67,7 @@ namespace mongo {
             errCount = 0;
             throwGLE = false;
             breakOnTrap = true;
+            loopCommands = true;
         }
 
         string host;
@@ -94,6 +95,7 @@ namespace mongo {
         bool error;
         bool throwGLE;
         bool breakOnTrap;
+        bool loopCommands;
 
         AtomicUInt threadsActive;
 
@@ -119,10 +121,10 @@ namespace mongo {
     }
     
     static void _fixField( BSONObjBuilder& b , const BSONElement& e ) {
-        assert( e.type() == Object );
+        verify( e.type() == Object );
         
         BSONObj sub = e.Obj();
-        assert( sub.nFields() == 1 );
+        verify( sub.nFields() == 1 );
         
         BSONElement f = sub.firstElement();
         if ( str::equals( "#RAND_INT" , f.fieldName() ) ) {
@@ -131,6 +133,10 @@ namespace mongo {
             int max = i.next().numberInt();
             
             int x = min + ( rand() % ( max - min ) );
+            
+            if ( i.more() )
+                x *= i.next().numberInt();
+
             b.append( e.fieldName() , x );
         }
         else {
@@ -173,12 +179,16 @@ namespace mongo {
     }
 
 
-    static void _benchThread( BenchRunConfig * config, ScopedDbConnection& conn ){
-
+    static void _benchThread( BenchRunConfig * config, DBClientBase* conn ){
+        verify( conn );
         long long count = 0;
-        while ( config->active ) {
+        while ( config->active || ! config->loopCommands ) {
             BSONObjIterator i( config->ops );
             while ( i.more() ) {
+
+                // Break out if we should stop and we're not running all commands then stopping
+                if( ! config->active && config->loopCommands ) break;
+
                 BSONElement e = i.next();
 
                 string ns = e["ns"].String();
@@ -186,13 +196,15 @@ namespace mongo {
 
                 int delay = e["delay"].eoo() ? 0 : e["delay"].Int();
 
+                BSONObj context = e["context"].eoo() ? BSONObj() : e["context"].Obj();
+
                 auto_ptr<Scope> scope;
                 ScriptingFunction scopeFunc = 0;
                 BSONObj scopeObj;
 
                 if (config->username != "") {
                     string errmsg;
-                    if (!conn.get()->auth(config->db, config->username, config->password, errmsg)) {
+                    if (!conn->auth(config->db, config->username, config->password, errmsg)) {
                         uasserted(15931, "Authenticating to connection for _benchThread failed: " + errmsg);
                     }
                 }
@@ -201,7 +213,7 @@ namespace mongo {
                 if( check ){
                     if ( e["check"].type() == CodeWScope || e["check"].type() == Code || e["check"].type() == String ) {
                         scope = globalScriptEngine->getPooledScope( ns );
-                        assert( scope.get() );
+                        verify( scope.get() );
 
                         if ( e.type() == CodeWScope ) {
                             scopeFunc = scope->createFunction( e["check"].codeWScopeCode() );
@@ -212,7 +224,7 @@ namespace mongo {
                         }
 
                         scope->init( &scopeObj );
-                        assert( scopeFunc );
+                        verify( scopeFunc );
                     }
                     else {
                         warning() << "Invalid check type detected in benchRun op : " << e << endl;
@@ -229,6 +241,10 @@ namespace mongo {
                             int err = scope->invoke( scopeFunc , 0 , &result,  1000 * 60 , false );
                             if( err ){
                                 log() << "Error checking in benchRun thread [findOne]" << causedBy( scope->getError() ) << endl;
+
+                                scoped_lock lock( config->_mutex );
+                                config->errCount++;
+
                                 return;
                             }
                         }
@@ -246,6 +262,10 @@ namespace mongo {
                             int err = scope->invoke( scopeFunc , 0 , &result,  1000 * 60 , false );
                             if( err ){
                                 log() << "Error checking in benchRun thread [command]" << causedBy( scope->getError() ) << endl;
+
+                                scoped_lock lock( config->_mutex );
+                                config->errCount++;
+
                                 return;
                             }
                         }
@@ -260,16 +280,26 @@ namespace mongo {
                         int options = e["options"].eoo() ? 0 : e["options"].Int();
                         int batchSize = e["batchSize"].eoo() ? 0 : e["batchSize"].Int();
                         BSONObj filter = e["filter"].eoo() ? BSONObj() : e["filter"].Obj();
+                        int expected = e["expected"].eoo() ? -1 : e["expected"].Int();
 
                         auto_ptr<DBClientCursor> cursor = conn->query( ns, fixQuery( e["query"].Obj() ), limit, skip, &filter, options, batchSize );
 
                         int count = cursor->itcount();
 
+                        if ( expected >= 0 &&  count != expected ) {
+                            cout << "bench query on: " << ns << " expected: " << expected << " got: " << cout << endl;
+                            verify(false);
+                        }
+
                         if( check ){
-                            BSONObj thisValue = BSON( "count" << count );
+                            BSONObj thisValue = BSON( "count" << count << "context" << context );
                             int err = scope->invoke( scopeFunc , 0 , &thisValue, 1000 * 60 , false );
                             if( err ){
                                 log() << "Error checking in benchRun thread [find]" << causedBy( scope->getError() ) << endl;
+
+                                scoped_lock lock( config->_mutex );
+                                config->errCount++;
+
                                 return;
                             }
                         }
@@ -294,6 +324,10 @@ namespace mongo {
                                 int err = scope->invoke( scopeFunc , 0 , &result, 1000 * 60 , false );
                                 if( err ){
                                     log() << "Error checking in benchRun thread [update]" << causedBy( scope->getError() ) << endl;
+
+                                    scoped_lock lock( config->_mutex );
+                                    config->errCount++;
+
                                     return;
                                 }
                             }
@@ -317,6 +351,10 @@ namespace mongo {
                                 int err = scope->invoke( scopeFunc , 0 , &result, 1000 * 60 , false );
                                 if( err ){
                                     log() << "Error checking in benchRun thread [insert]" << causedBy( scope->getError() ) << endl;
+
+                                    scoped_lock lock( config->_mutex );
+                                    config->errCount++;
+
                                     return;
                                 }
                             }
@@ -343,6 +381,10 @@ namespace mongo {
                                 int err = scope->invoke( scopeFunc , 0 , &result, 1000 * 60 , false );
                                 if( err ){
                                     log() << "Error checking in benchRun thread [delete]" << causedBy( scope->getError() ) << endl;
+
+                                    scoped_lock lock( config->_mutex );
+                                    config->errCount++;
+
                                     return;
                                 }
                             }
@@ -412,8 +454,9 @@ namespace mongo {
                 }
 
                 sleepmillis( delay );
-
             }
+
+            if( ! config->loopCommands ) break;
         }
     }
 
@@ -431,7 +474,7 @@ namespace mongo {
                 }
             }
 
-            _benchThread( config, conn );
+            _benchThread( config, conn.get() );
         }
         catch( DBException& e ){
             error() << "DBException not handled in benchRun thread" << causedBy( e ) << endl;
@@ -486,6 +529,8 @@ namespace mongo {
                 config.throwGLE = args["throwGLE"].trueValue();
             if ( ! args["breakOnTrap"].eoo() )
                 config.breakOnTrap = args["breakOnTrap"].trueValue();
+            if ( ! args["loopCommands"].eoo() )
+                config.loopCommands = args["loopCommands"].trueValue();
 
 
             if ( ! args["trapPattern"].eoo() ){
@@ -618,7 +663,7 @@ namespace mongo {
      * benchRun( { ops : [] , host : XXX , db : XXXX , parallel : 5 , seconds : 5 }
      */
     BSONObj benchRun( const BSONObj& argsFake, void* data ) {
-        assert( argsFake.firstElement().isABSONObj() );
+        verify( argsFake.firstElement().isABSONObj() );
         BSONObj args = argsFake.firstElement().Obj();
 
         // setup
@@ -712,7 +757,7 @@ namespace mongo {
      */
     BSONObj benchRunSync( const BSONObj& argsFake, void* data ) {
 
-        assert( argsFake.firstElement().isABSONObj() );
+        verify( argsFake.firstElement().isABSONObj() );
         BSONObj args = argsFake.firstElement().Obj();
 
         // Get new BenchRunner object
@@ -729,7 +774,7 @@ namespace mongo {
      */
     BSONObj benchStart( const BSONObj& argsFake, void* data ) {
 
-        assert( argsFake.firstElement().isABSONObj() );
+        verify( argsFake.firstElement().isABSONObj() );
         BSONObj args = argsFake.firstElement().Obj();
 
         // Get new BenchRunner object

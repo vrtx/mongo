@@ -47,7 +47,17 @@ namespace mongo {
         }
     }
 
+    void LastError::appendSelfStatus( BSONObjBuilder &b ) {
+        if ( writebackId.isSet() ) {
+            b.append( "writeback" , writebackId );
+            b.append( "instanceIdent" , prettyHostName() ); // this can be any unique string
+        }
+    }
+
     bool LastError::appendSelf( BSONObjBuilder &b , bool blankErr ) {
+
+        appendSelfStatus( b );
+        
         if ( !valid ) {
             if ( blankErr )
                 b.appendNull( "err" );
@@ -70,10 +80,7 @@ namespace mongo {
             b.appendBool( "updatedExisting", updatedExisting == True );
         if ( upsertedId.isSet() )
             b.append( "upserted" , upsertedId );
-        if ( writebackId.isSet() ) {
-            b.append( "writeback" , writebackId );
-            b.append( "instanceIdent" , prettyHostName() ); // this can be any unique string
-        }
+
         b.appendNumber( "n", nObjects );
 
         return ! msg.empty();
@@ -123,7 +130,7 @@ namespace mongo {
 
     void prepareErrForNewRequest( Message &m, LastError * err ) {
         // a killCursors message shouldn't affect last error
-        assert( err );
+        verify( err );
         if ( m.operation() == dbKillCursors ) {
             err->disabled = true;
         }
@@ -134,7 +141,7 @@ namespace mongo {
     }
 
     LastError * LastErrorHolder::startRequest( Message& m , LastError * le ) {
-        assert( le );
+        verify( le );
         prepareErrForNewRequest( m, le );
         return le;
     }

@@ -40,6 +40,9 @@ namespace mongo {
      */
     class SyncClusterConnection : public DBClientBase {
     public:
+
+        using DBClientBase::query;
+
         /**
          * @param commaSeparated should be 3 hosts comma separated
          */
@@ -76,7 +79,7 @@ namespace mongo {
         virtual void update( const string &ns , Query query , BSONObj obj , bool upsert , bool multi );
 
         virtual bool call( Message &toSend, Message &response, bool assertOk , string * actualServer );
-        virtual void say( Message &toSend, bool isRetry = false );
+        virtual void say( Message &toSend, bool isRetry = false , string * actualServer = 0 );
         virtual void sayPiggyBack( Message &toSend );
 
         virtual void killCursor( long long cursorID );
@@ -94,7 +97,7 @@ namespace mongo {
         void setAllSoTimeouts( double socketTimeout );
         double getSoTimeout() const { return _socketTimeout; }
 
-        virtual bool auth(const string &dbname, const string &username, const string &password_text, string& errmsg, bool digestPassword);
+        virtual bool auth(const string &dbname, const string &username, const string &password_text, string& errmsg, bool digestPassword, Auth::Level* level=NULL);
 
         virtual bool lazySupported() const { return false; }
     private:
@@ -122,7 +125,7 @@ namespace mongo {
     public:
         UpdateNotTheSame( int code , const string& msg , const vector<string>& addrs , const vector<BSONObj>& lastErrors )
             : UserException( code , msg ) , _addrs( addrs ) , _lastErrors( lastErrors ) {
-            assert( _addrs.size() == _lastErrors.size() );
+            verify( _addrs.size() == _lastErrors.size() );
         }
 
         virtual ~UpdateNotTheSame() throw() {

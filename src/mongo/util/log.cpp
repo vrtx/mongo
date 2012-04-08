@@ -18,8 +18,6 @@
 
 #include "pch.h"
 #include "assert_util.h"
-#include "assert.h"
-#include <cmath>
 #include "time_support.h"
 using namespace std;
 
@@ -35,6 +33,8 @@ using namespace std;
 # define dup2   _dup2       // Microsoft headers use ISO C names
 # define fileno _fileno
 #endif
+
+#include <boost/filesystem/operations.hpp>
 
 namespace mongo {
 
@@ -55,14 +55,14 @@ namespace mongo {
 
             bool exists = boost::filesystem::exists(lp);
             bool isdir = boost::filesystem::is_directory(lp);
-            bool isreg = boost::filesystem::is_regular_file(lp);
+            bool isreg = boost::filesystem::is_regular(lp);
 
             if ( exists ) {
                 if ( isdir ) {
                     cout << "logpath [" << lp << "] should be a filename, not a directory" << endl;
                     
                     dbexit( EXIT_BADOPTIONS );
-                    assert( 0 );
+                    verify( 0 );
                 }
 
                 if ( ! append ) {
@@ -78,7 +78,7 @@ namespace mongo {
                             cout << "log file [" << lp << "] exists and couldn't make backup; run with --logappend or manually remove file (" << strerror(errno) << ")" << endl;
                             
                             dbexit( EXIT_BADOPTIONS );
-                            assert( 0 );
+                            verify( 0 );
                         }
                     }
                 }
@@ -88,7 +88,7 @@ namespace mongo {
             if ( ! test ) {
                 cout << "can't open [" << lp << "] for log file: " << errnoWithDescription() << endl;
                 dbexit( EXIT_BADOPTIONS );
-                assert( 0 );
+                verify( 0 );
             }
 
             if (append && exists){
@@ -150,7 +150,7 @@ namespace mongo {
             if ( !tmp ) {
                 cerr << "can't open: " << _path.c_str() << " for log file" << endl;
                 dbexit( EXIT_BADOPTIONS );
-                assert( 0 );
+                verify( 0 );
             }
 
             // redirect stdout and stderr to log file
@@ -193,5 +193,189 @@ namespace mongo {
     // done *before* static initialization
     FILE* Logstream::logfile = stdout;
     bool Logstream::isSyslog = false;
+
+    string errnoWithDescription(int x) {
+#if defined(_WIN32)
+        if( x < 0 ) 
+            x = GetLastError();
+#else
+        if( x < 0 ) 
+            x = errno;
+#endif
+        stringstream s;
+        s << "errno:" << x << ' ';
+
+#if defined(_WIN32)
+        LPTSTR errorText = NULL;
+        FormatMessage(
+            FORMAT_MESSAGE_FROM_SYSTEM
+            |FORMAT_MESSAGE_ALLOCATE_BUFFER
+            |FORMAT_MESSAGE_IGNORE_INSERTS,
+            NULL,
+            x, 0,
+            (LPTSTR) &errorText,  // output
+            0, // minimum size for output buffer
+            NULL);
+        if( errorText ) {
+            string x = toUtf8String(errorText);
+            for( string::iterator i = x.begin(); i != x.end(); i++ ) {
+                if( *i == '\n' || *i == '\r' )
+                    break;
+                s << *i;
+            }
+            LocalFree(errorText);
+        }
+        else
+            s << strerror(x);
+        /*
+        DWORD n = FormatMessage(
+            FORMAT_MESSAGE_ALLOCATE_BUFFER |
+            FORMAT_MESSAGE_FROM_SYSTEM |
+            FORMAT_MESSAGE_IGNORE_INSERTS,
+            NULL, x,
+            MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+            (LPTSTR) &lpMsgBuf, 0, NULL);
+        */
+#else
+        s << strerror(x);
+#endif
+        return s.str();
+    }
+
+    void Logstream::logLockless( const StringData& s ) {
+
+        if ( s.size() == 0 )
+            return;
+
+        if ( doneSetup == 1717 ) {
+
+#if defined(_WIN32)
+            // fwrite() has a behavior problem in Windows when writing to the console
+            //  when the console is in the UTF-8 code page: fwrite() sends a single
+            //  byte and then the rest of the string.  If the first character is
+            //  non-ASCII, the console then displays two UTF-8 replacement characters
+            //  instead of the single UTF-8 character we want.  write() doesn't have
+            //  this problem.
+            int fd = fileno( logfile );
+            if ( _isatty( fd ) ) {
+                fflush( logfile );
+                _write( fd, s.data(), s.size() );
+                return;
+            }
+#else
+            if ( isSyslog ) {
+                syslog( LOG_INFO , "%s" , s.data() );
+                return;
+            }
+#endif
+
+            if (fwrite(s.data(), s.size(), 1, logfile)) {
+                fflush(logfile);
+            }
+            else {
+                int x = errno;
+                cout << "Failed to write to logfile: " << errnoWithDescription(x) << endl;
+            }
+        }
+        else {
+            cout << s.data();
+            cout.flush();
+        }
+    }
+
+    void Logstream::flush(Tee *t) {
+        const size_t MAX_LOG_LINE = 1024 * 10;
+
+        // this ensures things are sane
+        if ( doneSetup == 1717 ) {
+            string msg = ss.str();
+            
+            string threadName = getThreadName();
+            const char * type = logLevelToString(logLevel);
+
+            size_t msgLen = msg.size();
+            if ( msgLen > MAX_LOG_LINE )
+                msgLen = MAX_LOG_LINE;
+
+            const int spaceNeeded = (int)( msgLen + 64 /* for extra info */ + threadName.size());
+            int bufSize = 128;
+            while ( bufSize < spaceNeeded )
+                bufSize += 128;
+
+            BufBuilder b(bufSize);
+            time_t_to_String( time(0) , b.grow(20) );
+            if (!threadName.empty()) {
+                b.appendChar( '[' );
+                b.appendStr( threadName , false );
+                b.appendChar( ']' );
+                b.appendChar( ' ' );
+            }
+
+            for ( int i=0; i<indent; i++ )
+                b.appendChar( '\t' );
+
+            if ( type[0] ) {
+                b.appendStr( type , false );
+                b.appendStr( ": " , false );
+            }
+
+            if ( msg.size() > MAX_LOG_LINE ) {
+                stringstream sss;
+                sss << "warning: log line attempted (" << msg.size() / 1024 << "k) over max size(" << MAX_LOG_LINE / 1024 << "k)";
+                sss << ", printing beginning and end ... ";
+                b.appendStr( sss.str() );
+                const char * xx = msg.c_str();
+                b.appendBuf( xx , MAX_LOG_LINE / 3 );
+                b.appendStr( " .......... " );
+                b.appendStr( xx + msg.size() - ( MAX_LOG_LINE / 3 ) );
+            }
+            else {
+                b.appendStr( msg );
+            }
+
+            string out( b.buf() , b.len() - 1);
+            verify( b.len() < spaceNeeded );
+
+            scoped_lock lk(mutex);
+
+            if( t ) t->write(logLevel,out);
+            if ( globalTees ) {
+                for ( unsigned i=0; i<globalTees->size(); i++ )
+                    (*globalTees)[i]->write(logLevel,out);
+            }
+#ifndef _WIN32
+            if ( isSyslog ) {
+                syslog( logLevelToSysLogLevel(logLevel) , "%s" , out.data() );
+            } else
+#endif
+            if(fwrite(out.data(), out.size(), 1, logfile)) {
+                fflush(logfile);
+            }
+            else {
+                int x = errno;
+                cout << "Failed to write to logfile: " << errnoWithDescription(x) << ": " << out << endl;
+            }
+#ifdef POSIX_FADV_DONTNEED
+            // This only applies to pages that have already been flushed
+            RARELY posix_fadvise(fileno(logfile), 0, 0, POSIX_FADV_DONTNEED);
+#endif
+        }
+        _init();
+    }
+
+    void Logstream::setLogFile(FILE* f) {
+        scoped_lock lk(mutex);
+        logfile = f;
+    }
+        
+    Logstream& Logstream::get() {
+        if ( StaticObserver::_destroyingStatics ) {
+            cout << "Logstream::get called in uninitialized state" << endl;
+        }
+        Logstream *p = tsp.get();
+        if( p == 0 )
+            tsp.reset( p = new Logstream() );
+        return *p;
+    }
 
 }

@@ -18,7 +18,6 @@
 #include "pch.h"
 
 #include <fcntl.h>
-#include <errno.h>
 #include <time.h>
 
 #include "message.h"
@@ -30,6 +29,7 @@
 #include "../time_support.h"
 #include "../../db/cmdline.h"
 #include "../../client/dbclient.h"
+#include "../scopeguard.h"
 
 
 #ifndef _WIN32
@@ -38,12 +38,6 @@
 # endif
 # include <sys/resource.h>
 # include <sys/stat.h>
-#else
-
-// errno doesn't work for winsock.
-#undef errno
-#define errno WSAGetLastError()
-
 #endif
 
 namespace mongo {
@@ -70,7 +64,7 @@ namespace mongo {
         }
 
         void append( Message& m ) {
-            assert( m.header()->len <= 1300 );
+            verify( m.header()->len <= 1300 );
 
             if ( len() + m.header()->len > 1300 )
                 flush();
@@ -127,23 +121,23 @@ namespace mongo {
     }
 
     MessagingPort::MessagingPort(int fd, const SockAddr& remote) 
-        : Socket( fd , remote ) , piggyBackData(0) {
+        : psock( new Socket( fd , remote ) ) , piggyBackData(0) {
         ports.insert(this);
     }
 
     MessagingPort::MessagingPort( double timeout, int ll ) 
-        : Socket( timeout, ll ) {
+        : psock( new Socket( timeout, ll ) ) {
         ports.insert(this);
         piggyBackData = 0;
     }
 
-    MessagingPort::MessagingPort( Socket& sock )
-        : Socket( sock ) , piggyBackData( 0 ) {
+    MessagingPort::MessagingPort( boost::shared_ptr<Socket> sock )
+        : psock( sock ), piggyBackData( 0 ) {
         ports.insert(this);
     }
 
     void MessagingPort::shutdown() {
-        close();
+        psock->close();
     }
 
     MessagingPort::~MessagingPort() {
@@ -156,12 +150,12 @@ namespace mongo {
     bool MessagingPort::recv(Message& m) {
         try {
 again:
-            mmm( log() << "*  recv() sock:" << this->sock << endl; )
+            //mmm( log() << "*  recv() sock:" << this->sock << endl; )
             int len = -1;
 
             char *lenbuf = (char *) &len;
             int lft = 4;
-            Socket::recv( lenbuf, lft );
+            psock->recv( lenbuf, lft );
 
             if ( len < 16 || len > 48000000 ) { // messages must be large enough for headers
                 if ( len == -1 ) {
@@ -173,7 +167,7 @@ again:
 
                 if ( len == 542393671 ) {
                     // an http GET
-                    log(_logLevel) << "looks like you're trying to access db over http on native driver port.  please add 1000 for webserver" << endl;
+                    log( psock->getLogLevel() ) << "looks like you're trying to access db over http on native driver port.  please add 1000 for webserver" << endl;
                     string msg = "You are trying to access MongoDB on the native driver port. For http diagnostic access, add 1000 to the port number\n";
                     stringstream ss;
                     ss << "HTTP/1.0 200 OK\r\nConnection: close\r\nContent-Type: text/plain\r\nContent-Length: " << msg.size() << "\r\n\r\n" << msg;
@@ -186,28 +180,24 @@ again:
             }
 
             int z = (len+1023)&0xfffffc00;
-            assert(z>=len);
+            verify(z>=len);
             MsgData *md = (MsgData *) malloc(z);
-            assert(md);
+            ScopeGuard guard = MakeGuard(free, md);
+            verify(md);
             md->len = len;
 
             char *p = (char *) &md->id;
             int left = len -4;
 
-            try {
-                Socket::recv( p, left );
-            }
-            catch (...) {
-                free(md);
-                throw;
-            }
+            psock->recv( p, left );
 
+            guard.Dismiss();
             m.setData(md, true);
             return true;
 
         }
         catch ( const SocketException & e ) {
-            log(_logLevel + (e.shouldPrint() ? 0 : 1) ) << "SocketException: remote: " << remote() << " error: " << e << endl;
+            log(psock->getLogLevel() + (e.shouldPrint() ? 0 : 1) ) << "SocketException: remote: " << remote() << " error: " << e << endl;
             m.reset();
             return false;
         }
@@ -230,8 +220,10 @@ again:
     bool MessagingPort::recv( const Message& toSend , Message& response ) {
         while ( 1 ) {
             bool ok = recv(response);
-            if ( !ok )
+            if ( !ok ) {
+                mmm( log() << "recv not ok" << endl; )
                 return false;
+            }
             //log() << "got response: " << response.data->responseTo << endl;
             if ( response.header()->responseTo == toSend.header()->id )
                 break;
@@ -241,8 +233,8 @@ again:
                     << "  response msgid:" << (unsigned)response.header()->id << '\n'
                     << "  response len:  " << (unsigned)response.header()->len << '\n'
                     << "  response op:  " << response.operation() << '\n'
-                    << "  remote: " << remoteString() << endl;
-            assert(false);
+                    << "  remote: " << psock->remoteString() << endl;
+            verify(false);
             response.reset();
         }
         mmm( log() << "*call() end" << endl; )
@@ -250,12 +242,12 @@ again:
     }
 
     void MessagingPort::assertStillConnected() { 
-        uassert(15901, "client disconnected during operation", Socket::stillConnected());
+        uassert(15901, "client disconnected during operation", psock->stillConnected());
     }
 
     void MessagingPort::say(Message& toSend, int responseTo) {
-        assert( !toSend.empty() );
-        mmm( log() << "*  say() sock:" << this->sock << " thr:" << GetCurrentThreadId() << endl; )
+        verify( !toSend.empty() );
+        mmm( log() << "*  say()  thr:" << GetCurrentThreadId() << endl; )
         toSend.header()->id = nextMessageId();
         toSend.header()->responseTo = responseTo;
 
@@ -295,7 +287,7 @@ again:
 
     HostAndPort MessagingPort::remote() const {
         if ( ! _remoteParsed.hasPort() )
-            _remoteParsed = HostAndPort( remoteAddr() );
+            _remoteParsed = HostAndPort( psock->remoteAddr() );
         return _remoteParsed;
     }
 

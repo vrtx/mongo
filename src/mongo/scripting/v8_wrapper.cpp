@@ -15,14 +15,6 @@
  *    limitations under the License.
  */
 
-#if defined(_WIN32)
-/** this is a hack - v8stdint.h defined uint16_t etc. on _WIN32 only, and that collides with 
-    our usage of boost */
-#include "boost/cstdint.hpp"
-using namespace boost;
-#define V8STDINT_H_
-#endif
-
 #include "v8_wrapper.h"
 #include "v8_utils.h"
 #include "v8_db.h"
@@ -70,10 +62,10 @@ namespace mongo {
 
     WrapperHolder * getWrapper( v8::Handle<v8::Object> o ) {
         Handle<v8::Value> t = o->GetRealNamedProperty( v8::String::New( "_wrapper" ) );
-        assert( t->IsExternal() );
+        verify( t->IsExternal() );
         Local<External> c = External::Cast( *t );
         WrapperHolder * w = (WrapperHolder*)(c->Value());
-        assert( w );
+        verify( w );
         return w;
     }
 

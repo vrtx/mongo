@@ -21,7 +21,9 @@
 #include <boost/unordered_map.hpp>
 #include "util/intrusive_counter.h"
 #include "client/parallel.h"
+#include "db/clientcursor.h"
 #include "db/jsobj.h"
+#include "db/pipeline/dependency_tracker.h"
 #include "db/pipeline/document.h"
 #include "db/pipeline/expression.h"
 #include "db/pipeline/value.h"
@@ -30,6 +32,7 @@
 namespace mongo {
     class Accumulator;
     class Cursor;
+    class DependencyTracker;
     class Document;
     class Expression;
     class ExpressionContext;
@@ -39,114 +42,165 @@ namespace mongo {
 
     class DocumentSource :
         public IntrusiveCounterUnsigned,
-	public StringWriter {
+        public StringWriter {
     public:
-	virtual ~DocumentSource();
+        virtual ~DocumentSource();
 
-	// virtuals from StringWriter
-	/*
-	  Write out a string representation of this pipeline operator.
+        // virtuals from StringWriter
+        virtual void writeString(stringstream &ss) const;
 
-	  @param ss string stream to write the string representation to
-	 */
-	virtual void writeString(stringstream &ss) const;
+        /**
+           Set the step for a user-specified pipeline step.
 
+           The step is used for diagnostics.
 
-        /*
-	  Is the source at EOF?
+           @param step step number 0 to n.
+        */
+        void setPipelineStep(int step);
 
-	  @returns true if the source has no more Documents to return.
+        /**
+           Get the user-specified pipeline step.
+
+           @returns the step number, or -1 if it has never been set
+        */
+        int getPipelineStep() const;
+
+        /**
+          Is the source at EOF?
+
+          @returns true if the source has no more Documents to return.
         */
         virtual bool eof() = 0;
 
-        /*
-	  Advance the state of the DocumentSource so that it will return the
-	  next Document.
+        /**
+          Advance the state of the DocumentSource so that it will return the
+          next Document.
 
-	  @returns whether there is another document to fetch, i.e., whether or
-	    not getCurrent() will succeed.
+          The default implementation returns false, after checking for
+          interrupts.  Derived classes can call the default implementation
+          in their own implementations in order to check for interrupts.
+
+          @returns whether there is another document to fetch, i.e., whether or
+            not getCurrent() will succeed.  This default implementation always
+            returns false.
         */
-        virtual bool advance() = 0;
+        virtual bool advance();
 
-        /*
+        /**
           Advance the source, and return the next Expression.
 
-	  @returns the current Document
+          @returns the current Document
           TODO throws an exception if there are no more expressions to return.
         */
         virtual intrusive_ptr<Document> getCurrent() = 0;
 
-	/*
-	  Set the underlying source this source should use to get Documents
-	  from.
+        /**
+           Get the source's name.
 
-	  It is an error to set the source more than once.  This is to
-	  prevent changing sources once the original source has been started;
-	  this could break the state maintained by the DocumentSource.
+           @returns the string name of the source as a constant string;
+             this is static, and there's no need to worry about adopting it
+         */
+        virtual const char *getSourceName() const;
 
-	  @param pSource the underlying source to use
-	 */
-	virtual void setSource(const intrusive_ptr<DocumentSource> &pSource);
+        /**
+          Set the underlying source this source should use to get Documents
+          from.
 
-	/*
-	  Attempt to coalesce this DocumentSource with its successor in the
-	  document processing pipeline.  If successful, the successor
-	  DocumentSource should be removed from the pipeline and discarded.
+          It is an error to set the source more than once.  This is to
+          prevent changing sources once the original source has been started;
+          this could break the state maintained by the DocumentSource.
 
-	  If successful, this operation can be applied repeatedly, in an
-	  attempt to coalesce several sources together.
+          This pointer is not reference counted because that has led to
+          some circular references.  As a result, this doesn't keep
+          sources alive, and is only intended to be used temporarily for
+          the lifetime of a Pipeline::run().
 
-	  The default implementation is to do nothing, and return false.
+          @param pSource the underlying source to use
+         */
+        virtual void setSource(DocumentSource *pSource);
 
-	  @param pNextSource the next source in the document processing chain.
-	  @returns whether or not the attempt to coalesce was successful or not;
-	    if the attempt was not successful, nothing has been changed
-	 */
-	virtual bool coalesce(const intrusive_ptr<DocumentSource> &pNextSource);
+        /**
+          Attempt to coalesce this DocumentSource with its successor in the
+          document processing pipeline.  If successful, the successor
+          DocumentSource should be removed from the pipeline and discarded.
 
-	/*
-	  Optimize the pipeline operation, if possible.  This is a local
-	  optimization that only looks within this DocumentSource.  For best
-	  results, first coalesce compatible sources using coalesce().
+          If successful, this operation can be applied repeatedly, in an
+          attempt to coalesce several sources together.
 
-	  This is intended for any operations that include expressions, and
-	  provides a hook for those to optimize those operations.
+          The default implementation is to do nothing, and return false.
 
-	  The default implementation is to do nothing.
-	 */
-	virtual void optimize();
+          @param pNextSource the next source in the document processing chain.
+          @returns whether or not the attempt to coalesce was successful or not;
+            if the attempt was not successful, nothing has been changed
+         */
+        virtual bool coalesce(const intrusive_ptr<DocumentSource> &pNextSource);
+
+        /**
+          Optimize the pipeline operation, if possible.  This is a local
+          optimization that only looks within this DocumentSource.  For best
+          results, first coalesce compatible sources using coalesce().
+
+          This is intended for any operations that include expressions, and
+          provides a hook for those to optimize those operations.
+
+          The default implementation is to do nothing.
+         */
+        virtual void optimize();
+
+        /**
+           Adjust dependencies according to the needs of this source.
+
+           $$$ MONGO_LATER_SERVER_4644
+           @param pTracker the dependency tracker
+         */
+        virtual void manageDependencies(
+            const intrusive_ptr<DependencyTracker> &pTracker);
+
+        /**
+          Add the DocumentSource to the array builder.
+
+          The default implementation calls sourceToBson() in order to
+          convert the inner part of the object which will be added to the
+          array being built here.
+
+          @param pBuilder the array builder to add the operation to.
+         */
+        virtual void addToBsonArray(BSONArrayBuilder *pBuilder) const;
+        
+    protected:
+        /**
+           Base constructor.
+         */
+        DocumentSource(const intrusive_ptr<ExpressionContext> &pExpCtx);
+
+        /**
+          Create an object that represents the document source.  The object
+          will have a single field whose name is the source's name.  This
+          will be used by the default implementation of addToBsonArray()
+          to add this object to a pipeline being represented in BSON.
+
+          @param pBuilder a blank object builder to write to
+         */
+        virtual void sourceToBson(BSONObjBuilder *pBuilder) const = 0;
 
         /*
-	  Add the DocumentSource to the array builder.
+          Most DocumentSources have an underlying source they get their data
+          from.  This is a convenience for them.
 
-	  The default implementation calls sourceToBson() in order to
-	  convert the inner part of the object which will be added to the
-	  array being built here.
+          The default implementation of setSource() sets this; if you don't
+          need a source, override that to verify().  The default is to
+          verify() if this has already been set.
+        */
+        DocumentSource *pSource;
 
-	  @param pBuilder the array builder to add the operation to.
+        /*
+          The zero-based user-specified pipeline step.  Used for diagnostics.
+          Will be set to -1 for artificial pipeline steps that were not part
+          of the original user specification.
          */
-	virtual void addToBsonArray(BSONArrayBuilder *pBuilder) const;
-	
-    protected:
-	/*
-	  Create an object that represents the document source.  The object
-	  will have a single field whose name is the source's name.  This
-	  will be used by the default implementation of addToBsonArray()
-	  to add this object to a pipeline being represented in BSON.
+        int step;
 
-	  @param pBuilder a blank object builder to write to
-	 */
-	virtual void sourceToBson(BSONObjBuilder *pBuilder) const = 0;
-
-	/*
-	  Most DocumentSources have an underlying source they get their data
-	  from.  This is a convenience for them.
-
-	  The default implementation of setSource() sets this; if you don't
-	  need a source, override that to assert().  The default is to
-	  assert() if this has already been set.
-	*/
-	intrusive_ptr<DocumentSource> pSource;
+        intrusive_ptr<ExpressionContext> pExpCtx;
     };
 
 
@@ -158,83 +212,90 @@ namespace mongo {
         virtual bool eof();
         virtual bool advance();
         virtual intrusive_ptr<Document> getCurrent();
-	virtual void setSource(const intrusive_ptr<DocumentSource> &pSource);
+        virtual void setSource(DocumentSource *pSource);
 
-	/*
-	  Create a document source based on a BSON array.
+        /**
+          Create a document source based on a BSON array.
 
-	  This is usually put at the beginning of a chain of document sources
-	  in order to fetch data from the database.
+          This is usually put at the beginning of a chain of document sources
+          in order to fetch data from the database.
 
-	  CAUTION:  the BSON is not read until the source is used.  Any
-	  elements that appear after these documents must not be read until
-	  this source is exhausted.
+          CAUTION:  the BSON is not read until the source is used.  Any
+          elements that appear after these documents must not be read until
+          this source is exhausted.
 
-	  @param pBsonElement the BSON array to treat as a document source
-	  @returns the newly created document source
-	*/
-	static intrusive_ptr<DocumentSourceBsonArray> create(
-	    BSONElement *pBsonElement);
+          @param pBsonElement the BSON array to treat as a document source
+          @param pExpCtx the expression context for the pipeline
+          @returns the newly created document source
+        */
+        static intrusive_ptr<DocumentSourceBsonArray> create(
+            BSONElement *pBsonElement,
+            const intrusive_ptr<ExpressionContext> &pExpCtx);
 
     protected:
-	// virtuals from DocumentSource
-	virtual void sourceToBson(BSONObjBuilder *pBuilder) const;
+        // virtuals from DocumentSource
+        virtual void sourceToBson(BSONObjBuilder *pBuilder) const;
 
     private:
-        DocumentSourceBsonArray(BSONElement *pBsonElement);
+        DocumentSourceBsonArray(BSONElement *pBsonElement,
+            const intrusive_ptr<ExpressionContext> &pExpCtx);
 
-	BSONObj embeddedObject;
-	BSONObjIterator arrayIterator;
-	BSONElement currentElement;
-	bool haveCurrent;
+        BSONObj embeddedObject;
+        BSONObjIterator arrayIterator;
+        BSONElement currentElement;
+        bool haveCurrent;
     };
 
     
     class DocumentSourceCommandFutures :
-	public DocumentSource {
+        public DocumentSource {
     public:
-	// virtuals from DocumentSource
-	virtual ~DocumentSourceCommandFutures();
+        // virtuals from DocumentSource
+        virtual ~DocumentSourceCommandFutures();
         virtual bool eof();
         virtual bool advance();
         virtual intrusive_ptr<Document> getCurrent();
-	virtual void setSource(const intrusive_ptr<DocumentSource> &pSource);
+        virtual void setSource(DocumentSource *pSource);
 
-	/* convenient shorthand for a commonly used type */
-	typedef list<shared_ptr<Future::CommandResult> > FuturesList;
+        /* convenient shorthand for a commonly used type */
+        typedef list<shared_ptr<Future::CommandResult> > FuturesList;
 
-	/*
-	  Create a DocumentSource that wraps a list of Command::Futures.
+        /**
+          Create a DocumentSource that wraps a list of Command::Futures.
 
-	  @param errmsg place to write error messages to; must exist for the
-	    lifetime of the created DocumentSourceCommandFutures
-	  @param pList the list of futures
-	 */
-	static intrusive_ptr<DocumentSourceCommandFutures> create(
-	    string &errmsg, FuturesList *pList);
+          @param errmsg place to write error messages to; must exist for the
+            lifetime of the created DocumentSourceCommandFutures
+          @param pList the list of futures
+          @param pExpCtx the expression context for the pipeline
+          @returns the newly created DocumentSource
+         */
+        static intrusive_ptr<DocumentSourceCommandFutures> create(
+            string &errmsg, FuturesList *pList,
+            const intrusive_ptr<ExpressionContext> &pExpCtx);
 
     protected:
-	// virtuals from DocumentSource
-	virtual void sourceToBson(BSONObjBuilder *pBuilder) const;
+        // virtuals from DocumentSource
+        virtual void sourceToBson(BSONObjBuilder *pBuilder) const;
 
     private:
-	DocumentSourceCommandFutures(string &errmsg, FuturesList *pList);
+        DocumentSourceCommandFutures(string &errmsg, FuturesList *pList,
+            const intrusive_ptr<ExpressionContext> &pExpCtx);
 
-	/*
-	  Advance to the next document, setting pCurrent appropriately.
+        /**
+          Advance to the next document, setting pCurrent appropriately.
 
-	  Adjusts pCurrent, pBsonSource, and iterator, as needed.  On exit,
-	  pCurrent is the Document to return, or NULL.  If NULL, this
-	  indicates there is nothing more to return.
-	 */
-	void getNextDocument();
+          Adjusts pCurrent, pBsonSource, and iterator, as needed.  On exit,
+          pCurrent is the Document to return, or NULL.  If NULL, this
+          indicates there is nothing more to return.
+         */
+        void getNextDocument();
 
-	bool newSource; // set to true for the first item of a new source
-	intrusive_ptr<DocumentSourceBsonArray> pBsonSource;
-	intrusive_ptr<Document> pCurrent;
-	FuturesList::iterator iterator;
-	FuturesList::iterator listEnd;
-	string &errmsg;
+        bool newSource; // set to true for the first item of a new source
+        intrusive_ptr<DocumentSourceBsonArray> pBsonSource;
+        intrusive_ptr<Document> pCurrent;
+        FuturesList::iterator iterator;
+        FuturesList::iterator listEnd;
+        string &errmsg;
     };
 
 
@@ -246,29 +307,89 @@ namespace mongo {
         virtual bool eof();
         virtual bool advance();
         virtual intrusive_ptr<Document> getCurrent();
-	virtual void setSource(const intrusive_ptr<DocumentSource> &pSource);
+        virtual void setSource(DocumentSource *pSource);
+        virtual void manageDependencies(
+            const intrusive_ptr<DependencyTracker> &pTracker);
 
-	/*
-	  Create a document source based on a cursor.
+        /**
+          Create a document source based on a cursor.
 
-	  This is usually put at the beginning of a chain of document sources
-	  in order to fetch data from the database.
+          This is usually put at the beginning of a chain of document sources
+          in order to fetch data from the database.
 
-	  @param pCursor the cursor to use to fetch data
-	*/
-	static intrusive_ptr<DocumentSourceCursor> create(
-	    const shared_ptr<Cursor> &pCursor);
+          @param pCursor the cursor to use to fetch data
+          @param pExpCtx the expression context for the pipeline
+        */
+        static intrusive_ptr<DocumentSourceCursor> create(
+            const shared_ptr<Cursor> &pCursor,
+            const string &ns,
+            const intrusive_ptr<ExpressionContext> &pExpCtx);
+
+        /**
+           Add a BSONObj dependency.
+
+           Some Cursor creation functions rely on BSON objects to specify
+           their query predicate or sort.  These often take a BSONObj
+           by reference for these, but to not copy it.  As a result, the
+           BSONObjs specified must outlive the Cursor.  In order to ensure
+           that, use this to preserve a pointer to the BSONObj here.
+
+           From the outside, you must also make sure the BSONObjBuilder
+           creates a lasting copy of the data, otherwise it will go away
+           when the builder goes out of scope.  Therefore, the typical usage
+           pattern for this is 
+           {
+               BSONObjBuilder builder;
+               // do stuff to the builder
+               shared_ptr<BSONObj> pBsonObj(new BSONObj(builder.obj()));
+               pDocumentSourceCursor->addBsonDependency(pBsonObj);
+           }
+
+           @param pBsonObj pointer to the BSON object to preserve
+         */
+        void addBsonDependency(const shared_ptr<BSONObj> &pBsonObj);
 
     protected:
-	// virtuals from DocumentSource
-	virtual void sourceToBson(BSONObjBuilder *pBuilder) const;
+        // virtuals from DocumentSource
+        virtual void sourceToBson(BSONObjBuilder *pBuilder) const;
 
     private:
-        DocumentSourceCursor(const shared_ptr<Cursor> &pTheCursor);
+        DocumentSourceCursor(
+            const shared_ptr<Cursor> &pTheCursor, const string &ns,
+            const intrusive_ptr<ExpressionContext> &pExpCtx);
 
-	void findNext();
+        void findNext();
+        intrusive_ptr<Document> pCurrent;
+
+        /*
+          The bsonDependencies must outlive the Cursor wrapped by this
+          source.  Therefore, bsonDependencies must appear before pCursor
+          in order cause its destructor to be called *after* pCursor's.
+         */
+        vector<shared_ptr<BSONObj> > bsonDependencies;
         shared_ptr<Cursor> pCursor;
-	intrusive_ptr<Document> pCurrent;
+
+        /*
+          In order to yield, we need a ClientCursor.
+         */
+        ClientCursor::CleanupPointer pClientCursor;
+
+        /*
+          Advance the cursor, and yield sometimes.
+
+          If the state of the world changed during the yield such that we
+          are unable to continue execution of the query, this will release the
+          client cursor, and throw an error.
+         */
+        void advanceAndYield();
+
+        /*
+          This document source hangs on to the dependency tracker when it
+          gets it so that it can be used for selective reification of
+          fields in order to avoid fields that are not required through the
+          pipeline.
+         */
+        intrusive_ptr<DependencyTracker> pDependencies;
     };
 
 
@@ -287,30 +408,31 @@ namespace mongo {
         virtual bool advance();
         virtual intrusive_ptr<Document> getCurrent();
 
-	/*
-	  Create a BSONObj suitable for Matcher construction.
+        /**
+          Create a BSONObj suitable for Matcher construction.
 
-	  This is used after filter analysis has moved as many filters to
-	  as early a point as possible in the document processing pipeline.
-	  See db/Matcher.h and the associated wiki documentation for the
-	  format.  This conversion is used to move back to the low-level
-	  find() Cursor mechanism.
+          This is used after filter analysis has moved as many filters to
+          as early a point as possible in the document processing pipeline.
+          See db/Matcher.h and the associated wiki documentation for the
+          format.  This conversion is used to move back to the low-level
+          find() Cursor mechanism.
 
-	  @param pBuilder the builder to write to
-	 */
-	virtual void toMatcherBson(BSONObjBuilder *pBuilder) const = 0;
+          @param pBuilder the builder to write to
+         */
+        virtual void toMatcherBson(BSONObjBuilder *pBuilder) const = 0;
 
     protected:
-        DocumentSourceFilterBase();
+        DocumentSourceFilterBase(
+            const intrusive_ptr<ExpressionContext> &pExpCtx);
 
-	/*
-	  Test the given document against the predicate and report if it
-	  should be accepted or not.
+        /**
+          Test the given document against the predicate and report if it
+          should be accepted or not.
 
-	  @param pDocument the document to test
-	  @returns true if the document matches the filter, false otherwise
-	 */
-	virtual bool accept(const intrusive_ptr<Document> &pDocument) const = 0;
+          @param pDocument the document to test
+          @returns true if the document matches the filter, false otherwise
+         */
+        virtual bool accept(const intrusive_ptr<Document> &pDocument) const = 0;
 
     private:
 
@@ -327,52 +449,57 @@ namespace mongo {
     public:
         // virtuals from DocumentSource
         virtual ~DocumentSourceFilter();
-	virtual bool coalesce(const intrusive_ptr<DocumentSource> &pNextSource);
-	virtual void optimize();
+        virtual bool coalesce(const intrusive_ptr<DocumentSource> &pNextSource);
+        virtual void optimize();
+        virtual const char *getSourceName() const;
 
-	/*
-	  Create a filter.
+        /**
+          Create a filter.
 
           @param pBsonElement the raw BSON specification for the filter
+          @param pExpCtx the expression context for the pipeline
           @returns the filter
-	 */
-	static intrusive_ptr<DocumentSource> createFromBson(
-	    BSONElement *pBsonElement,
-	    const intrusive_ptr<ExpressionContext> &pCtx);
+         */
+        static intrusive_ptr<DocumentSource> createFromBson(
+            BSONElement *pBsonElement,
+            const intrusive_ptr<ExpressionContext> &pExpCtx);
 
-        /*
+        /**
           Create a filter.
 
           @param pFilter the expression to use to filter
+          @param pExpCtx the expression context for the pipeline
           @returns the filter
          */
         static intrusive_ptr<DocumentSourceFilter> create(
-            const intrusive_ptr<Expression> &pFilter);
+            const intrusive_ptr<Expression> &pFilter,
+            const intrusive_ptr<ExpressionContext> &pExpCtx);
 
-	/*
-	  Create a BSONObj suitable for Matcher construction.
+        /**
+          Create a BSONObj suitable for Matcher construction.
 
-	  This is used after filter analysis has moved as many filters to
-	  as early a point as possible in the document processing pipeline.
-	  See db/Matcher.h and the associated wiki documentation for the
-	  format.  This conversion is used to move back to the low-level
-	  find() Cursor mechanism.
+          This is used after filter analysis has moved as many filters to
+          as early a point as possible in the document processing pipeline.
+          See db/Matcher.h and the associated wiki documentation for the
+          format.  This conversion is used to move back to the low-level
+          find() Cursor mechanism.
 
-	  @param pBuilder the builder to write to
-	 */
-	void toMatcherBson(BSONObjBuilder *pBuilder) const;
+          @param pBuilder the builder to write to
+         */
+        void toMatcherBson(BSONObjBuilder *pBuilder) const;
 
-	static const char filterName[];
+        static const char filterName[];
 
     protected:
-	// virtuals from DocumentSource
-	virtual void sourceToBson(BSONObjBuilder *pBuilder) const;
+        // virtuals from DocumentSource
+        virtual void sourceToBson(BSONObjBuilder *pBuilder) const;
 
-	// virtuals from DocumentSourceFilterBase
-	virtual bool accept(const intrusive_ptr<Document> &pDocument) const;
+        // virtuals from DocumentSourceFilterBase
+        virtual bool accept(const intrusive_ptr<Document> &pDocument) const;
 
     private:
-        DocumentSourceFilter(const intrusive_ptr<Expression> &pFilter);
+        DocumentSourceFilter(const intrusive_ptr<Expression> &pFilter,
+                             const intrusive_ptr<ExpressionContext> &pExpCtx);
 
         intrusive_ptr<Expression> pFilter;
     };
@@ -385,18 +512,19 @@ namespace mongo {
         virtual ~DocumentSourceGroup();
         virtual bool eof();
         virtual bool advance();
+        virtual const char *getSourceName() const;
         virtual intrusive_ptr<Document> getCurrent();
 
-        /*
+        /**
           Create a new grouping DocumentSource.
-	  
-	  @param pCtx the expression context
-	  @returns the DocumentSource
+          
+          @param pExpCtx the expression context for the pipeline
+          @returns the DocumentSource
          */
         static intrusive_ptr<DocumentSourceGroup> create(
-	    const intrusive_ptr<ExpressionContext> &pCtx);
+            const intrusive_ptr<ExpressionContext> &pExpCtx);
 
-        /*
+        /**
           Set the Id Expression.
 
           Documents that pass through the grouping Document are grouped
@@ -407,7 +535,7 @@ namespace mongo {
          */
         void setIdExpression(const intrusive_ptr<Expression> &pExpression);
 
-        /*
+        /**
           Add an accumulator.
 
           Accumulators become fields in the Documents that result from
@@ -420,56 +548,56 @@ namespace mongo {
                 group field
          */
         void addAccumulator(string fieldName,
-			    intrusive_ptr<Accumulator> (*pAccumulatorFactory)(
-			    const intrusive_ptr<ExpressionContext> &),
+                            intrusive_ptr<Accumulator> (*pAccumulatorFactory)(
+                            const intrusive_ptr<ExpressionContext> &),
                             const intrusive_ptr<Expression> &pExpression);
 
-	/*
-	  Create a grouping DocumentSource from BSON.
+        /**
+          Create a grouping DocumentSource from BSON.
 
-	  This is a convenience method that uses the above, and operates on
-	  a BSONElement that has been deteremined to be an Object with an
-	  element named $group.
+          This is a convenience method that uses the above, and operates on
+          a BSONElement that has been deteremined to be an Object with an
+          element named $group.
 
-	  @param pBsonElement the BSONELement that defines the group
-	  @param pCtx the expression context
-	  @returns the grouping DocumentSource
-	 */
+          @param pBsonElement the BSONELement that defines the group
+          @param pExpCtx the expression context
+          @returns the grouping DocumentSource
+         */
         static intrusive_ptr<DocumentSource> createFromBson(
-	    BSONElement *pBsonElement,
-	    const intrusive_ptr<ExpressionContext> &pCtx);
+            BSONElement *pBsonElement,
+            const intrusive_ptr<ExpressionContext> &pExpCtx);
 
 
-	/*
-	  Create a unifying group that can be used to combine group results
-	  from shards.
+        /**
+          Create a unifying group that can be used to combine group results
+          from shards.
 
-	  @returns the grouping DocumentSource
-	*/
-	intrusive_ptr<DocumentSource> createMerger();
+          @returns the grouping DocumentSource
+        */
+        intrusive_ptr<DocumentSource> createMerger();
 
-	static const char groupName[];
+        static const char groupName[];
 
     protected:
-	// virtuals from DocumentSource
-	virtual void sourceToBson(BSONObjBuilder *pBuilder) const;
+        // virtuals from DocumentSource
+        virtual void sourceToBson(BSONObjBuilder *pBuilder) const;
 
     private:
-        DocumentSourceGroup(const intrusive_ptr<ExpressionContext> &pCtx);
+        DocumentSourceGroup(const intrusive_ptr<ExpressionContext> &pExpCtx);
 
-	/*
-	  Before returning anything, this source must fetch everything from
-	  the underlying source and group it.  populate() is used to do that
-	  on the first call to any method on this source.  The populated
-	  boolean indicates that this has been done.
-	 */
+        /*
+          Before returning anything, this source must fetch everything from
+          the underlying source and group it.  populate() is used to do that
+          on the first call to any method on this source.  The populated
+          boolean indicates that this has been done.
+         */
         void populate();
         bool populated;
 
         intrusive_ptr<Expression> pIdExpression;
 
-	typedef boost::unordered_map<intrusive_ptr<const Value>,
-	    vector<intrusive_ptr<Accumulator> >, Value::Hash> GroupsType;
+        typedef boost::unordered_map<intrusive_ptr<const Value>,
+            vector<intrusive_ptr<Accumulator> >, Value::Hash> GroupsType;
         GroupsType groups;
 
         /*
@@ -486,17 +614,15 @@ namespace mongo {
         */
         vector<string> vFieldName;
         vector<intrusive_ptr<Accumulator> (*)(
-	    const intrusive_ptr<ExpressionContext> &)> vpAccumulatorFactory;
+            const intrusive_ptr<ExpressionContext> &)> vpAccumulatorFactory;
         vector<intrusive_ptr<Expression> > vpExpression;
 
 
         intrusive_ptr<Document> makeDocument(
-	    const GroupsType::iterator &rIter);
+            const GroupsType::iterator &rIter);
 
         GroupsType::iterator groupsIterator;
         intrusive_ptr<Document> pCurrent;
-
-	intrusive_ptr<ExpressionContext> pCtx;
     };
 
 
@@ -505,43 +631,47 @@ namespace mongo {
     public:
         // virtuals from DocumentSource
         virtual ~DocumentSourceMatch();
+        virtual const char *getSourceName() const;
+        virtual void manageDependencies(
+            const intrusive_ptr<DependencyTracker> &pTracker);
 
-	/*
-	  Create a filter.
+        /**
+          Create a filter.
 
           @param pBsonElement the raw BSON specification for the filter
           @returns the filter
-	 */
-	static intrusive_ptr<DocumentSource> createFromBson(
-	    BSONElement *pBsonElement,
-	    const intrusive_ptr<ExpressionContext> &pCtx);
+         */
+        static intrusive_ptr<DocumentSource> createFromBson(
+            BSONElement *pBsonElement,
+            const intrusive_ptr<ExpressionContext> &pCtx);
 
-	/*
-	  Create a BSONObj suitable for Matcher construction.
+        /**
+          Create a BSONObj suitable for Matcher construction.
 
-	  This is used after filter analysis has moved as many filters to
-	  as early a point as possible in the document processing pipeline.
-	  See db/Matcher.h and the associated wiki documentation for the
-	  format.  This conversion is used to move back to the low-level
-	  find() Cursor mechanism.
+          This is used after filter analysis has moved as many filters to
+          as early a point as possible in the document processing pipeline.
+          See db/Matcher.h and the associated wiki documentation for the
+          format.  This conversion is used to move back to the low-level
+          find() Cursor mechanism.
 
-	  @param pBuilder the builder to write to
-	 */
-	void toMatcherBson(BSONObjBuilder *pBuilder) const;
+          @param pBuilder the builder to write to
+         */
+        void toMatcherBson(BSONObjBuilder *pBuilder) const;
 
-	static const char matchName[];
+        static const char matchName[];
 
     protected:
-	// virtuals from DocumentSource
-	virtual void sourceToBson(BSONObjBuilder *pBuilder) const;
+        // virtuals from DocumentSource
+        virtual void sourceToBson(BSONObjBuilder *pBuilder) const;
 
-	// virtuals from DocumentSourceFilterBase
-	virtual bool accept(const intrusive_ptr<Document> &pDocument) const;
+        // virtuals from DocumentSourceFilterBase
+        virtual bool accept(const intrusive_ptr<Document> &pDocument) const;
 
     private:
-        DocumentSourceMatch(const BSONObj &query);
+        DocumentSourceMatch(const BSONObj &query,
+            const intrusive_ptr<ExpressionContext> &pExpCtx);
 
-	Matcher matcher;
+        Matcher matcher;
     };
 
 
@@ -552,63 +682,72 @@ namespace mongo {
         virtual ~DocumentSourceOut();
         virtual bool eof();
         virtual bool advance();
+        virtual const char *getSourceName() const;
         virtual intrusive_ptr<Document> getCurrent();
 
-	/*
-	  Create a document source for output and pass-through.
+        /**
+          Create a document source for output and pass-through.
 
-	  This can be put anywhere in a pipeline and will store content as
-	  well as pass it on.
+          This can be put anywhere in a pipeline and will store content as
+          well as pass it on.
 
-	  @returns the newly created document source
-	*/
-	static intrusive_ptr<DocumentSourceOut> createFromBson(
-	    BSONElement *pBsonElement);
+          @param pBsonElement the raw BSON specification for the source
+          @param pExpCtx the expression context for the pipeline
+          @returns the newly created document source
+        */
+        static intrusive_ptr<DocumentSourceOut> createFromBson(
+            BSONElement *pBsonElement,
+            const intrusive_ptr<ExpressionContext> &pExpCtx);
 
-	static const char outName[];
+        static const char outName[];
 
     protected:
-	// virtuals from DocumentSource
-	virtual void sourceToBson(BSONObjBuilder *pBuilder) const;
+        // virtuals from DocumentSource
+        virtual void sourceToBson(BSONObjBuilder *pBuilder) const;
 
     private:
-        DocumentSourceOut(BSONElement *pBsonElement);
+        DocumentSourceOut(BSONElement *pBsonElement,
+            const intrusive_ptr<ExpressionContext> &pExpCtx);
     };
 
     
     class DocumentSourceProject :
-        public DocumentSource,
-        public boost::enable_shared_from_this<DocumentSourceProject> {
+        public DocumentSource {
     public:
         // virtuals from DocumentSource
         virtual ~DocumentSourceProject();
         virtual bool eof();
         virtual bool advance();
+        virtual const char *getSourceName() const;
         virtual intrusive_ptr<Document> getCurrent();
-	virtual void optimize();
+        virtual void optimize();
+        virtual void manageDependencies(
+            const intrusive_ptr<DependencyTracker> &pTracker);
 
-        /*
+        /**
           Create a new DocumentSource that can implement projection.
 
-	  @returns the projection DocumentSource
+          @param pExpCtx the expression context for the pipeline
+          @returns the projection DocumentSource
         */
-        static intrusive_ptr<DocumentSourceProject> create();
+        static intrusive_ptr<DocumentSourceProject> create(
+            const intrusive_ptr<ExpressionContext> &pExpCtx);
 
-	/*
-	  Include a field path in a projection.
+        /**
+          Include a field path in a projection.
 
-	  @param fieldPath the path of the field to include
-	*/
-	void includePath(const string &fieldPath);
+          @param fieldPath the path of the field to include
+        */
+        void includePath(const string &fieldPath);
 
-	/*
-	  Exclude a field path from the projection.
+        /**
+          Exclude a field path from the projection.
 
-	  @param fieldPath the path of the field to exclude
-	 */
-	void excludePath(const string &fieldPath);
+          @param fieldPath the path of the field to exclude
+         */
+        void excludePath(const string &fieldPath);
 
-        /*
+        /**
           Add an output Expression in the projection.
 
           BSON document fields are ordered, so the new field will be
@@ -618,33 +757,93 @@ namespace mongo {
           @param pExpression the expression used to compute the field
         */
         void addField(const string &fieldName,
-		      const intrusive_ptr<Expression> &pExpression);
+                      const intrusive_ptr<Expression> &pExpression);
 
-	/*
-	  Create a new projection DocumentSource from BSON.
+        /**
+          Create a new projection DocumentSource from BSON.
 
-	  This is a convenience for directly handling BSON, and relies on the
-	  above methods.
+          This is a convenience for directly handling BSON, and relies on the
+          above methods.
 
-	  @param pBsonElement the BSONElement with an object named $project
-	  @returns the created projection
-	 */
+          @param pBsonElement the BSONElement with an object named $project
+          @param pExpCtx the expression context for the pipeline
+          @returns the created projection
+         */
         static intrusive_ptr<DocumentSource> createFromBson(
             BSONElement *pBsonElement,
-	    const intrusive_ptr<ExpressionContext> &pCtx);
+            const intrusive_ptr<ExpressionContext> &pExpCtx);
 
-	static const char projectName[];
+        static const char projectName[];
 
     protected:
-	// virtuals from DocumentSource
-	virtual void sourceToBson(BSONObjBuilder *pBuilder) const;
+        // virtuals from DocumentSource
+        virtual void sourceToBson(BSONObjBuilder *pBuilder) const;
 
     private:
-        DocumentSourceProject();
+        DocumentSourceProject(const intrusive_ptr<ExpressionContext> &pExpCtx);
 
         // configuration state
-	bool excludeId;
-	intrusive_ptr<ExpressionObject> pEO;
+        bool excludeId;
+        intrusive_ptr<ExpressionObject> pEO;
+
+        /*
+          Utility object used by manageDependencies().
+
+          Removes dependencies from a DependencyTracker.
+         */
+        class DependencyRemover :
+            public ExpressionObject::PathSink {
+        public:
+            // virtuals from PathSink
+            virtual void path(const string &path, bool include);
+
+            /*
+              Constructor.
+
+              Captures a reference to the smart pointer to the DependencyTracker
+              that this will remove dependencies from via
+              ExpressionObject::emitPaths().
+
+              @param pTracker reference to the smart pointer to the
+                DependencyTracker
+             */
+            DependencyRemover(const intrusive_ptr<DependencyTracker> &pTracker);
+
+        private:
+            const intrusive_ptr<DependencyTracker> &pTracker;
+        };
+
+        /*
+          Utility object used by manageDependencies().
+
+          Checks dependencies to see if they are present.  If not, then
+          throws a user error.
+         */
+        class DependencyChecker :
+            public ExpressionObject::PathSink {
+        public:
+            // virtuals from PathSink
+            virtual void path(const string &path, bool include);
+
+            /*
+              Constructor.
+
+              Captures a reference to the smart pointer to the DependencyTracker
+              that this will check dependencies from from
+              ExpressionObject::emitPaths() to see if they are required.
+
+              @param pTracker reference to the smart pointer to the
+                DependencyTracker
+              @param pThis the projection that is making this request
+             */
+            DependencyChecker(
+                const intrusive_ptr<DependencyTracker> &pTracker,
+                const DocumentSourceProject *pThis);
+
+        private:
+            const intrusive_ptr<DependencyTracker> &pTracker;
+            const DocumentSourceProject *pThis;
+        };
     };
 
 
@@ -655,115 +854,117 @@ namespace mongo {
         virtual ~DocumentSourceSort();
         virtual bool eof();
         virtual bool advance();
+        virtual const char *getSourceName() const;
         virtual intrusive_ptr<Document> getCurrent();
-	/*
-	  TODO
-	  Adjacent sorts should reduce to the last sort.
-	virtual bool coalesce(const intrusive_ptr<DocumentSource> &pNextSource);
-	*/
-
+        virtual void manageDependencies(
+            const intrusive_ptr<DependencyTracker> &pTracker);
         /*
+          TODO
+          Adjacent sorts should reduce to the last sort.
+        virtual bool coalesce(const intrusive_ptr<DocumentSource> &pNextSource);
+        */
+
+        /**
           Create a new sorting DocumentSource.
-	  
-	  @param pCtx the expression context
-	  @returns the DocumentSource
+          
+          @param pExpCtx the expression context for the pipeline
+          @returns the DocumentSource
          */
         static intrusive_ptr<DocumentSourceSort> create(
-	    const intrusive_ptr<ExpressionContext> &pCtx);
+            const intrusive_ptr<ExpressionContext> &pExpCtx);
 
-	/*
-	  Add sort key field.
+        /**
+          Add sort key field.
 
-	  Adds a sort key field to the key being built up.  A concatenated
-	  key is built up by calling this repeatedly.
+          Adds a sort key field to the key being built up.  A concatenated
+          key is built up by calling this repeatedly.
 
-	  @param fieldPath the field path to the key component
-	  @param ascending if true, use the key for an ascending sort,
-	    otherwise, use it for descending
-	*/
-	void addKey(const string &fieldPath, bool ascending);
+          @param fieldPath the field path to the key component
+          @param ascending if true, use the key for an ascending sort,
+            otherwise, use it for descending
+        */
+        void addKey(const string &fieldPath, bool ascending);
 
-	/*
-	  Write out an object whose contents are the sort key.
+        /**
+          Write out an object whose contents are the sort key.
 
-	  @param pBuilder initialized object builder.
-	  @param fieldPrefix specify whether or not to include the field prefix
-	 */
-	void sortKeyToBson(BSONObjBuilder *pBuilder, bool usePrefix) const;
+          @param pBuilder initialized object builder.
+          @param fieldPrefix specify whether or not to include the field prefix
+         */
+        void sortKeyToBson(BSONObjBuilder *pBuilder, bool usePrefix) const;
 
-	/*
-	  Create a sorting DocumentSource from BSON.
+        /**
+          Create a sorting DocumentSource from BSON.
 
-	  This is a convenience method that uses the above, and operates on
-	  a BSONElement that has been deteremined to be an Object with an
-	  element named $group.
+          This is a convenience method that uses the above, and operates on
+          a BSONElement that has been deteremined to be an Object with an
+          element named $group.
 
-	  @param pBsonElement the BSONELement that defines the group
-	  @param pCtx the expression context
-	  @returns the grouping DocumentSource
-	 */
+          @param pBsonElement the BSONELement that defines the group
+          @param pExpCtx the expression context for the pipeline
+          @returns the grouping DocumentSource
+         */
         static intrusive_ptr<DocumentSource> createFromBson(
-	    BSONElement *pBsonElement,
-	    const intrusive_ptr<ExpressionContext> &pCtx);
+            BSONElement *pBsonElement,
+            const intrusive_ptr<ExpressionContext> &pExpCtx);
 
 
-	static const char sortName[];
+        static const char sortName[];
 
     protected:
-	// virtuals from DocumentSource
-	virtual void sourceToBson(BSONObjBuilder *pBuilder) const;
+        // virtuals from DocumentSource
+        virtual void sourceToBson(BSONObjBuilder *pBuilder) const;
 
     private:
-        DocumentSourceSort(const intrusive_ptr<ExpressionContext> &pCtx);
+        DocumentSourceSort(const intrusive_ptr<ExpressionContext> &pExpCtx);
 
-	/*
-	  Before returning anything, this source must fetch everything from
-	  the underlying source and group it.  populate() is used to do that
-	  on the first call to any method on this source.  The populated
-	  boolean indicates that this has been done.
-	 */
+        /*
+          Before returning anything, this source must fetch everything from
+          the underlying source and group it.  populate() is used to do that
+          on the first call to any method on this source.  The populated
+          boolean indicates that this has been done.
+         */
         void populate();
         bool populated;
         long long count;
 
-	/* these two parallel each other */
-	vector<intrusive_ptr<ExpressionFieldPath> > vSortKey;
-	vector<bool> vAscending;
+        /* these two parallel each other */
+        typedef vector<intrusive_ptr<ExpressionFieldPath> > SortPaths;
+        SortPaths vSortKey;
+        vector<bool> vAscending;
 
-	class Carrier {
-	public:
-	    /*
-	      We need access to the key for compares, so we have to carry
-	      this around.
-	    */
-	    DocumentSourceSort *pSort;
+        class Carrier {
+        public:
+            /*
+              We need access to the key for compares, so we have to carry
+              this around.
+            */
+            DocumentSourceSort *pSort;
 
-	    intrusive_ptr<Document> pDocument;
+            intrusive_ptr<Document> pDocument;
 
-	    Carrier(DocumentSourceSort *pSort,
-		    const intrusive_ptr<Document> &pDocument);
+            Carrier(DocumentSourceSort *pSort,
+                    const intrusive_ptr<Document> &pDocument);
 
-	    static bool lessThan(const Carrier &rL, const Carrier &rR);
-	};
+            static bool lessThan(const Carrier &rL, const Carrier &rR);
+        };
 
-	/*
-	  Compare two documents according to the specified sort key.
+        /*
+          Compare two documents according to the specified sort key.
 
-	  @param rL reference to the left document
-	  @param rR reference to the right document
-	  @returns a number less than, equal to, or greater than zero,
-	    indicating pL < pR, pL == pR, or pL > pR, respectively
-	 */
-	int compare(const intrusive_ptr<Document> &pL,
-		    const intrusive_ptr<Document> &pR);
+          @param rL reference to the left document
+          @param rR reference to the right document
+          @returns a number less than, equal to, or greater than zero,
+            indicating pL < pR, pL == pR, or pL > pR, respectively
+         */
+        int compare(const intrusive_ptr<Document> &pL,
+                    const intrusive_ptr<Document> &pR);
 
-	typedef list<Carrier> ListType;
-	ListType documents;
+        typedef list<Carrier> ListType;
+        ListType documents;
 
         ListType::iterator listIterator;
         intrusive_ptr<Document> pCurrent;
-
-	intrusive_ptr<ExpressionContext> pCtx;
     };
 
 
@@ -775,46 +976,47 @@ namespace mongo {
         virtual bool eof();
         virtual bool advance();
         virtual intrusive_ptr<Document> getCurrent();
+        virtual const char *getSourceName() const;
+        virtual bool coalesce(const intrusive_ptr<DocumentSource> &pNextSource);
 
-        /*
+        /**
           Create a new limiting DocumentSource.
 
-	  @param pCtx the expression context
-	  @returns the DocumentSource
+          @param pExpCtx the expression context for the pipeline
+          @returns the DocumentSource
          */
         static intrusive_ptr<DocumentSourceLimit> create(
-	    const intrusive_ptr<ExpressionContext> &pCtx);
+            const intrusive_ptr<ExpressionContext> &pExpCtx);
 
-	/*
-	  Create a limiting DocumentSource from BSON.
+        /**
+          Create a limiting DocumentSource from BSON.
 
-	  This is a convenience method that uses the above, and operates on
-	  a BSONElement that has been deteremined to be an Object with an
-	  element named $limit.
+          This is a convenience method that uses the above, and operates on
+          a BSONElement that has been deteremined to be an Object with an
+          element named $limit.
 
-	  @param pBsonElement the BSONELement that defines the limit
-	  @param pCtx the expression context
-	  @returns the grouping DocumentSource
-	 */
+          @param pBsonElement the BSONELement that defines the limit
+          @param pExpCtx the expression context
+          @returns the grouping DocumentSource
+         */
         static intrusive_ptr<DocumentSource> createFromBson(
-	    BSONElement *pBsonElement,
-	    const intrusive_ptr<ExpressionContext> &pCtx);
+            BSONElement *pBsonElement,
+            const intrusive_ptr<ExpressionContext> &pExpCtx);
 
 
-	static const char limitName[];
+        static const char limitName[];
 
     protected:
-	// virtuals from DocumentSource
-	virtual void sourceToBson(BSONObjBuilder *pBuilder) const;
+        // virtuals from DocumentSource
+        virtual void sourceToBson(BSONObjBuilder *pBuilder) const;
 
     private:
-        DocumentSourceLimit(const intrusive_ptr<ExpressionContext> &pCtx);
+        DocumentSourceLimit(
+            const intrusive_ptr<ExpressionContext> &pExpCtx);
 
         long long limit;
         long long count;
         intrusive_ptr<Document> pCurrent;
-
-	intrusive_ptr<ExpressionContext> pCtx;
     };
 
     class DocumentSourceSkip :
@@ -825,40 +1027,42 @@ namespace mongo {
         virtual bool eof();
         virtual bool advance();
         virtual intrusive_ptr<Document> getCurrent();
+        virtual const char *getSourceName() const;
+        virtual bool coalesce(const intrusive_ptr<DocumentSource> &pNextSource);
 
-        /*
+        /**
           Create a new skipping DocumentSource.
 
-	  @param pCtx the expression context
-	  @returns the DocumentSource
+          @param pExpCtx the expression context
+          @returns the DocumentSource
          */
         static intrusive_ptr<DocumentSourceSkip> create(
-	    const intrusive_ptr<ExpressionContext> &pCtx);
+            const intrusive_ptr<ExpressionContext> &pExpCtx);
 
-	/*
-	  Create a skipping DocumentSource from BSON.
+        /**
+          Create a skipping DocumentSource from BSON.
 
-	  This is a convenience method that uses the above, and operates on
-	  a BSONElement that has been deteremined to be an Object with an
-	  element named $skip.
+          This is a convenience method that uses the above, and operates on
+          a BSONElement that has been deteremined to be an Object with an
+          element named $skip.
 
-	  @param pBsonElement the BSONELement that defines the skip
-	  @param pCtx the expression context
-	  @returns the grouping DocumentSource
-	 */
+          @param pBsonElement the BSONELement that defines the skip
+          @param pExpCtx the expression context
+          @returns the grouping DocumentSource
+         */
         static intrusive_ptr<DocumentSource> createFromBson(
-	    BSONElement *pBsonElement,
-	    const intrusive_ptr<ExpressionContext> &pCtx);
+            BSONElement *pBsonElement,
+            const intrusive_ptr<ExpressionContext> &pExpCtx);
 
 
-	static const char skipName[];
+        static const char skipName[];
 
     protected:
-	// virtuals from DocumentSource
-	virtual void sourceToBson(BSONObjBuilder *pBuilder) const;
+        // virtuals from DocumentSource
+        virtual void sourceToBson(BSONObjBuilder *pBuilder) const;
 
     private:
-        DocumentSourceSkip(const intrusive_ptr<ExpressionContext> &pCtx);
+        DocumentSourceSkip(const intrusive_ptr<ExpressionContext> &pExpCtx);
 
         /*
           Skips initial documents.
@@ -868,63 +1072,66 @@ namespace mongo {
         long long skip;
         long long count;
         intrusive_ptr<Document> pCurrent;
-
-	intrusive_ptr<ExpressionContext> pCtx;
     };
 
 
     class DocumentSourceUnwind :
-        public DocumentSource,
-        public boost::enable_shared_from_this<DocumentSourceUnwind> {
+        public DocumentSource {
     public:
         // virtuals from DocumentSource
         virtual ~DocumentSourceUnwind();
         virtual bool eof();
         virtual bool advance();
+        virtual const char *getSourceName() const;
         virtual intrusive_ptr<Document> getCurrent();
+        virtual void manageDependencies(
+            const intrusive_ptr<DependencyTracker> &pTracker);
 
-        /*
+        /**
           Create a new DocumentSource that can implement unwind.
 
-	  @returns the projection DocumentSource
+          @param pExpCtx the expression context for the pipeline
+          @returns the projection DocumentSource
         */
-        static intrusive_ptr<DocumentSourceUnwind> create();
+        static intrusive_ptr<DocumentSourceUnwind> create(
+            const intrusive_ptr<ExpressionContext> &pExpCtx);
 
-        /*
-	  Specify the field to unwind.  There must be exactly one before
-	  the pipeline begins execution.
+        /**
+          Specify the field to unwind.  There must be exactly one before
+          the pipeline begins execution.
 
-	  @param rFieldPath - path to the field to unwind
+          @param rFieldPath - path to the field to unwind
         */
-	void unwindField(const FieldPath &rFieldPath);
+        void unwindField(const FieldPath &rFieldPath);
 
-	/*
-	  Create a new projection DocumentSource from BSON.
+        /**
+          Create a new projection DocumentSource from BSON.
 
-	  This is a convenience for directly handling BSON, and relies on the
-	  above methods.
+          This is a convenience for directly handling BSON, and relies on the
+          above methods.
 
-	  @param pBsonElement the BSONElement with an object named $project
-	  @returns the created projection
-	 */
+          @param pBsonElement the BSONElement with an object named $project
+          @param pExpCtx the expression context for the pipeline
+          @returns the created projection
+         */
         static intrusive_ptr<DocumentSource> createFromBson(
             BSONElement *pBsonElement,
-	    const intrusive_ptr<ExpressionContext> &pCtx);
+            const intrusive_ptr<ExpressionContext> &pExpCtx);
 
-	static const char unwindName[];
+        static const char unwindName[];
 
     protected:
-	// virtuals from DocumentSource
-	virtual void sourceToBson(BSONObjBuilder *pBuilder) const;
+        // virtuals from DocumentSource
+        virtual void sourceToBson(BSONObjBuilder *pBuilder) const;
 
     private:
-        DocumentSourceUnwind();
+        DocumentSourceUnwind(const intrusive_ptr<ExpressionContext> &pExpCtx);
 
         // configuration state
-	FieldPath unwindPath;
+        FieldPath unwindPath;
 
-	vector<int> fieldIndex; /* for the current document, the indices
-				   leading down to the field being unwound */
+        vector<int> fieldIndex; /* for the current document, the indices
+                                   leading down to the field being unwound */
 
         // iteration state
         intrusive_ptr<Document> pNoUnwindDocument;
@@ -933,28 +1140,27 @@ namespace mongo {
         intrusive_ptr<ValueIterator> pUnwinder; // iterator used for unwinding
         intrusive_ptr<const Value> pUnwindValue; // current value
 
-	/*
-	  Clear all the state related to unwinding an array.
-	 */
-	void resetArray();
+        /*
+          Clear all the state related to unwinding an array.
+         */
+        void resetArray();
 
-	/*
-	  Clone the current document being unwound.
+        /*
+          Clone the current document being unwound.
 
-	  This is a partial deep clone.  Because we're going to replace the
-	  value at the end, we have to replace everything along the path
-	  leading to that in order to not share that change with any other
-	  clones (or the original) that we've made.
+          This is a partial deep clone.  Because we're going to replace the
+          value at the end, we have to replace everything along the path
+          leading to that in order to not share that change with any other
+          clones (or the original) that we've made.
 
-	  This expects pUnwindValue to have been set by a prior call to
-	  advance().  However, pUnwindValue may also be NULL, in which case
-	  the field will be removed -- this is the action for an empty
-	  array.
+          This expects pUnwindValue to have been set by a prior call to
+          advance().  However, pUnwindValue may also be NULL, in which case
+          the field will be removed -- this is the action for an empty
+          array.
 
-	  @returns a partial deep clone of pNoUnwindDocument
-	 */
-	intrusive_ptr<Document> clonePath() const;
-
+          @returns a partial deep clone of pNoUnwindDocument
+         */
+        intrusive_ptr<Document> clonePath() const;
     };
 
 }
@@ -964,22 +1170,42 @@ namespace mongo {
 
 namespace mongo {
 
+    inline void DocumentSource::setPipelineStep(int s) {
+        step = s;
+    }
+
+    inline int DocumentSource::getPipelineStep() const {
+        return step;
+    }
+    
     inline void DocumentSourceGroup::setIdExpression(
         const intrusive_ptr<Expression> &pExpression) {
         pIdExpression = pExpression;
     }
 
+    inline DocumentSourceProject::DependencyRemover::DependencyRemover(
+        const intrusive_ptr<DependencyTracker> &pT):
+        pTracker(pT) {
+    }
+
+    inline DocumentSourceProject::DependencyChecker::DependencyChecker(
+        const intrusive_ptr<DependencyTracker> &pTrack,
+        const DocumentSourceProject *pT):
+        pTracker(pTrack),
+        pThis(pT) {
+    }
+
     inline void DocumentSourceUnwind::resetArray() {
-	pNoUnwindDocument.reset();
-	pUnwindArray.reset();
-	pUnwinder.reset();
-	pUnwindValue.reset();
+        pNoUnwindDocument.reset();
+        pUnwindArray.reset();
+        pUnwinder.reset();
+        pUnwindValue.reset();
     }
 
     inline DocumentSourceSort::Carrier::Carrier(
-	DocumentSourceSort *pTheSort,
-	const intrusive_ptr<Document> &pTheDocument):
-	pSort(pTheSort),
-	pDocument(pTheDocument) {
+        DocumentSourceSort *pTheSort,
+        const intrusive_ptr<Document> &pTheDocument):
+        pSort(pTheSort),
+        pDocument(pTheDocument) {
     }
 }

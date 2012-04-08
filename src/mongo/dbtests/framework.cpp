@@ -19,10 +19,7 @@
 #include "pch.h"
 #include "../util/version.h"
 #include <boost/program_options.hpp>
-
-#undef assert
-#define assert MONGO_assert
-
+#include <boost/filesystem/operations.hpp>
 #include "framework.h"
 #include "../util/file_allocator.h"
 #include "../db/dur.h"
@@ -364,7 +361,7 @@ namespace mongo {
             for ( list<string>::iterator i=torun.begin(); i!=torun.end(); i++ ) {
                 string name = *i;
                 Suite * s = (*_suites)[name];
-                assert( s );
+                verify( s );
 
                 log() << "going to run suite: " << name << endl;
                 results.push_back( s->run( filter ) );
@@ -418,11 +415,12 @@ namespace mongo {
 
             MyAssertionException * e = new MyAssertionException();
             e->ss << "ASSERT FAILED! " << file << ":" << line << endl;
+            cout << e->ss.str() << endl;
             throw e;
         }
 
         void fail( const char * exp , const char * file , unsigned line ) {
-            assert(0);
+            verify(0);
         }
 
         MyAssertionException * MyAsserts::getBase() {

@@ -25,6 +25,7 @@
 #include "../util/concurrency/spin_lock.h"
 #include "../util/time_support.h"
 #include "../util/net/hostandport.h"
+#include "../util/progress_meter.h"
 
 namespace mongo {
 
@@ -58,10 +59,11 @@ namespace mongo {
         bool exhaust;
 
         // debugging/profile info
-        int nscanned;
+        long long nscanned;
         bool idhack;         // indicates short circuited code path on an update to make the update faster
         bool scanAndOrder;   // scanandorder query plan aspect was used
-        bool moved;          // update resulted in a move (moves are expensive)
+        long long  nupdated; // number of records updated
+        long long  nmoved;   // updates resulted in a move (moves are expensive)
         bool fastmod;
         bool fastmodinsert;  // upsert of an $operation. builds a default object
         bool upsert;         // true if the update actually did an insert
@@ -163,13 +165,9 @@ namespace mongo {
         void reset();
         void reset( const HostAndPort& remote, int op );
         void markCommand() { _command = true; }
-
-        void waitingForLock( int type ) {
+        void waitingForLock( char type ) {
             _waitingForLock = true;
-            if ( type > 0 )
-                _lockType = 1;
-            else
-                _lockType = -1;
+            _lockType = type;
         }
         void gotLock()             { _waitingForLock = false; }
         OpDebug& debug()           { return _debug; }
@@ -188,7 +186,8 @@ namespace mongo {
         /** if this op is running */
         bool active() const { return _active; }
 
-        int getLockType() const { return _lockType; }
+        char lockType() const { return _lockType; }
+        bool displayInCurop() const { return _active && ! _suppressFromCurop; }
         bool isWaitingForLock() const { return _waitingForLock; }
         int getOp() const { return _op; }
         unsigned long long startTime() { // micros
@@ -225,6 +224,8 @@ namespace mongo {
             strncpy(_ns, ns, Namespace::MaxNsLen);
             _ns[Namespace::MaxNsLen] = 0;
         }
+        
+        void suppressFromCurop() { _suppressFromCurop = true; }
 
     private:
         friend class Client;
@@ -237,9 +238,10 @@ namespace mongo {
         unsigned long long _checkpoint;
         unsigned long long _end;
         bool _active;
+        bool _suppressFromCurop; // unless $all is set
         int _op;
         bool _command;
-        int _lockType;                   // see concurrency.h for values
+        char _lockType;                   // r w R W
         bool _waitingForLock;
         int _dbprofile;                  // 0=off, 1=slow, 2=all
         AtomicUInt _opNum;               // todo: simple being "unsigned" may make more sense here
@@ -272,8 +274,9 @@ namespace mongo {
                 return;
             if( _globalKill )
                 uasserted(11600,"interrupted at shutdown");
-            if( c.curop()->killed() )
-                uasserted(11601,"interrupted");
+            if( c.curop()->killed() ) {
+                uasserted(11601,"operation was interrupted");
+            }
             if( c.sometimes(1024) ) {
                 AbstractMessagingPort *p = cc().port();
                 if( p ) 

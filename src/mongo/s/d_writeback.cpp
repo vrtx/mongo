@@ -21,6 +21,8 @@
 #include "../db/commands.h"
 #include "../util/queue.h"
 #include "../util/net/listen.h"
+#include "../db/curop.h"
+#include "../db/client.h"
 
 #include "d_writeback.h"
 
@@ -40,6 +42,19 @@ namespace mongo {
     }
 
     void WriteBackManager::queueWriteBack( const string& remote , const BSONObj& o ) {
+        static mongo::mutex xxx( "WriteBackManager::queueWriteBack tmp" );
+        static OID lastOID;
+
+        scoped_lock lk( xxx );
+        const BSONElement& e = o["id"];
+        
+        if ( lastOID.isSet() ) {
+            if ( e.OID() < lastOID ) {
+                log() << "this could fail" << endl;
+                printStackTrace();
+            }
+        }
+        lastOID = e.OID();
         getWritebackQueue( remote )->queue.push( o );
     }
 
@@ -131,6 +146,8 @@ namespace mongo {
 
         bool run(const string& , BSONObj& cmdObj, int, string& errmsg, BSONObjBuilder& result, bool) {
 
+            cc().curop()->suppressFromCurop();
+
             BSONElement e = cmdObj.firstElement();
             if ( e.type() != jstOID ) {
                 errmsg = "need oid as first value";
@@ -150,6 +167,16 @@ namespace mongo {
             else {
                 result.appendBool( "noop" , true );
             }
+
+#ifdef _DEBUG
+            // Sleep a short amount of time usually
+            int sleepFor = rand() % 10;
+            sleepmillis( sleepFor );
+
+            // Sleep a longer amount of time every once and awhile
+            int sleepLong = rand() % 50;
+            if( sleepLong == 0 ) sleepsecs( 2 );
+#endif
 
             return true;
         }

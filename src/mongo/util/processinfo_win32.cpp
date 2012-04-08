@@ -19,7 +19,7 @@
 #include "processinfo.h"
 #include <iostream>
 #include <psapi.h>
-#include "../bson/bsonobjbuilder.h"
+
 using namespace std;
 
 int getpid() {
@@ -28,6 +28,29 @@ int getpid() {
 
 namespace mongo {
 
+    // dynamically link to psapi.dll (in case this version of Windows
+    // does not support what we need)
+    struct PsApiInit {
+        bool supported;
+        typedef BOOL (WINAPI *pQueryWorkingSetEx)(HANDLE hProcess, 
+                                                  PVOID pv, 
+                                                  DWORD cb);
+        pQueryWorkingSetEx QueryWSEx;
+        
+        PsApiInit() {
+            HINSTANCE psapiLib = LoadLibrary( TEXT("psapi.dll") );
+            if (psapiLib) {
+                QueryWSEx = reinterpret_cast<pQueryWorkingSetEx>
+                    ( GetProcAddress( psapiLib, "QueryWorkingSetEx" ) );
+                if (QueryWSEx) {
+                    supported = true;
+                    return;
+                }
+            }
+            supported = false;
+        }
+    } psapiGlobal;
+                
     int _wconvertmtos( SIZE_T s ) {
         return (int)( s / ( 1024 * 1024 ) );
     }
@@ -45,15 +68,15 @@ namespace mongo {
     int ProcessInfo::getVirtualMemorySize() {
         MEMORYSTATUSEX mse;
         mse.dwLength = sizeof(mse);
-        verify( 16050, GlobalMemoryStatusEx( &mse ) );
+        verify( GlobalMemoryStatusEx( &mse ) );
         DWORDLONG x = (mse.ullTotalVirtual - mse.ullAvailVirtual) / (1024 * 1024) ;
-        assert( x <= 0x7fffffff );
+        verify( x <= 0x7fffffff );
         return (int) x;
     }
 
     int ProcessInfo::getResidentSize() {
         PROCESS_MEMORY_COUNTERS pmc;
-        verify( 16051, GetProcessMemoryInfo( GetCurrentProcess() , &pmc, sizeof(pmc) ) );
+        verify( GetProcessMemoryInfo( GetCurrentProcess() , &pmc, sizeof(pmc) ) );
         return _wconvertmtos( pmc.WorkingSetSize );
     }
 
@@ -72,8 +95,108 @@ namespace mongo {
         }
     }
 
+    void ProcessInfo::SystemInfo::collectSystemInfo() {
+        BSONObjBuilder bExtra;
+        stringstream verstr;
+        OSVERSIONINFOEX osvi;   // os version 
+        MEMORYSTATUSEX mse;     // memory stats
+        SYSTEM_INFO ntsysinfo;  //system stats
+
+        // get basic processor properties
+        GetNativeSystemInfo( &ntsysinfo );
+        addrSize = (ntsysinfo.wProcessorArchitecture == PROCESSOR_ARCHITECTURE_AMD64 ? 64 : 32);
+        numCores = ntsysinfo.dwNumberOfProcessors;
+        bExtra.append( "pageSize", static_cast< int >(ntsysinfo.dwPageSize) );
+
+        // get memory info
+        mse.dwLength = sizeof( mse );
+        if ( GlobalMemoryStatusEx( &mse ) ) {
+            memSize = mse.ullTotalPhys;
+        }
+
+        // get OS version info
+        ZeroMemory( &osvi, sizeof( osvi ) );
+        osvi.dwOSVersionInfoSize = sizeof( osvi );
+        if ( GetVersionEx( (OSVERSIONINFO*)&osvi ) ) {
+
+            verstr << osvi.dwMajorVersion << "." << osvi.dwMinorVersion;
+            if ( osvi.wServicePackMajor )
+                verstr << " SP" << osvi.wServicePackMajor;
+            verstr << " (build " << osvi.dwBuildNumber << ")";
+
+            osName = "Microsoft ";
+            switch ( osvi.dwMajorVersion ) {
+            case 6:
+                switch ( osvi.dwMinorVersion ) {
+                    case 2:
+                        if ( osvi.wProductType == VER_NT_WORKSTATION )
+                            osName += "Windows 8";
+                        else
+                            osName += "Windows Server 8";
+                        break;
+                    case 1:
+                        if ( osvi.wProductType == VER_NT_WORKSTATION )
+                            osName += "Windows 7";
+                        else
+                            osName += "Windows Server 2008 R2";
+                        break;
+                    case 0:
+                        if ( osvi.wProductType == VER_NT_WORKSTATION )
+                            osName += "Windows Vista";
+                        else
+                            osName += "Windows Server 2008";
+                        break;
+                    default:
+                        osName += "Windows NT version ";
+                        osName += verstr.str();
+                        break;
+                }
+                break;
+            case 5:
+                switch ( osvi.dwMinorVersion ) {
+                    case 2:
+                        osName += "Windows Server 2003";
+                        break;
+                    case 1:
+                        osName += "Windows XP";
+                        break;
+                    case 0:
+                        if ( osvi.wProductType == VER_NT_WORKSTATION )
+                            osName += "Windows 2000 Professional";
+                        else
+                            osName += "Windows 2000 Server";
+                        break;
+                    default:
+                        osName += "Windows NT version ";
+                        osName += verstr.str();
+                        break;
+                }
+                break;
+            }
+        }
+        else {
+            // unable to get any version data
+            osName += "Windows NT";
+        }
+
+        if ( ntsysinfo.wProcessorArchitecture == PROCESSOR_ARCHITECTURE_AMD64 ) { cpuArch = "x86_64"; }
+        else if ( ntsysinfo.wProcessorArchitecture == PROCESSOR_ARCHITECTURE_INTEL ) { cpuArch = "x86"; }
+        else if ( ntsysinfo.wProcessorArchitecture == PROCESSOR_ARCHITECTURE_IA64 ) { cpuArch = "ia64"; }
+        else { cpuArch = "unknown"; }
+
+        osType = "Windows";
+        osVersion = verstr.str();
+        hasNuma = checkNumaEnabled();
+        _extraStats = bExtra.obj();
+
+    }
+
+    bool ProcessInfo::checkNumaEnabled() {
+        return false;
+    }
+
     bool ProcessInfo::blockCheckSupported() {
-        return true;
+        return psapiGlobal.supported;
     }
 
     bool ProcessInfo::blockInMemory( char * start ) {
@@ -93,10 +216,11 @@ namespace mongo {
 #endif
         PSAPI_WORKING_SET_EX_INFORMATION wsinfo;
         wsinfo.VirtualAddress = start;
-        BOOL result = QueryWorkingSetEx( GetCurrentProcess(), &wsinfo, sizeof(wsinfo) );
+        BOOL result = psapiGlobal.QueryWSEx( GetCurrentProcess(), &wsinfo, sizeof(wsinfo) );
         if ( result )
             if ( wsinfo.VirtualAttributes.Valid )
                 return true;
         return false;
     }
+
 }

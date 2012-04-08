@@ -23,6 +23,7 @@
 #include "jsobj.h"
 #include "indexkey.h"
 #include "key.h"
+#include "namespace.h"
 
 namespace mongo {
 
@@ -126,7 +127,7 @@ namespace mongo {
             string s;
             s.reserve(Namespace::MaxNsLen);
             s = io.getStringField("ns");
-            assert( !s.empty() );
+            verify( !s.empty() );
             s += ".$";
             s += io.getStringField("name");
             return s;

@@ -22,10 +22,9 @@
 #if defined(_DEBUG)
 #include "mutexdebugger.h"
 #endif
+#include "mongo/util/assert_util.h"
 
 namespace mongo {
-
-    void printStackTrace( ostream &o );
 
     inline boost::xtime incxtimemillis( long long s ) {
         boost::xtime xt;
@@ -88,12 +87,7 @@ namespace mongo {
         public:
 #if defined(_DEBUG)
             struct PostStaticCheck {
-                PostStaticCheck() {
-                    if ( StaticObserver::_destroyingStatics ) {
-                        cout << "_DEBUG warning trying to lock a mongo::mutex during static shutdown" << endl;
-                        printStackTrace( cout );
-                    }
-                }
+                PostStaticCheck();
             } _check;
             mongo::mutex * const _mut;
 #endif
@@ -120,8 +114,7 @@ namespace mongo {
         boost::timed_mutex *_m;
     };
 
-    typedef mutex::scoped_lock scoped_lock;
-    typedef boost::recursive_mutex::scoped_lock recursive_scoped_lock;
+    typedef mongo::mutex::scoped_lock scoped_lock;
 
     /** The concept with SimpleMutex is that it is a basic lock/unlock with no 
           special functionality (such as try and try timeout).  Thus it can be 
@@ -135,54 +128,43 @@ namespace mongo {
         SimpleMutex(const char *name) { InitializeCriticalSection(&_cs); }
         ~SimpleMutex() { DeleteCriticalSection(&_cs); }
 
-#if defined(_DEBUG)
-        ThreadLocalValue<int> _nlocksByMe;
         void lock() { 
-            assert( _nlocksByMe.get() == 0 ); // indicates you rae trying to lock recursively
-            _nlocksByMe.set(1);
             EnterCriticalSection(&_cs); 
+#if defined(_DEBUG)
+            verify( _cs.RecursionCount == 1 );
+#endif
         }
         void dassertLocked() const { 
-            assert( _nlocksByMe.get() == 1 );
+#if defined(_DEBUG)
+            verify( _cs.OwningThread == (HANDLE) GetCurrentThreadId() );
+#endif
         }
         void unlock() { 
             dassertLocked();
-            _nlocksByMe.set(0);
             LeaveCriticalSection(&_cs); 
         }
-#else
-        void dassertLocked() const { }
-        void lock() { 
-            EnterCriticalSection(&_cs); 
-        }
-        void unlock() { 
-            LeaveCriticalSection(&_cs); 
-        }
-#endif
 
         class scoped_lock : boost::noncopyable {
             SimpleMutex& _m;
         public:
             scoped_lock( SimpleMutex &m ) : _m(m) { _m.lock(); }
             ~scoped_lock() { _m.unlock(); }
-# if defined(_DEBUG)
             const SimpleMutex& m() const { return _m; }
-# endif
         };
     };
 #else
     class SimpleMutex : boost::noncopyable {
     public:
         void dassertLocked() const { }
-        SimpleMutex(const char* name) { assert( pthread_mutex_init(&_lock,0) == 0 ); }
+        SimpleMutex(const char* name) { verify( pthread_mutex_init(&_lock,0) == 0 ); }
         ~SimpleMutex(){ 
             if ( ! StaticObserver::_destroyingStatics ) { 
-                assert( pthread_mutex_destroy(&_lock) == 0 ); 
+                verify( pthread_mutex_destroy(&_lock) == 0 ); 
             }
         }
 
-        void lock() { assert( pthread_mutex_lock(&_lock) == 0 ); }
-        void unlock() { assert( pthread_mutex_unlock(&_lock) == 0 ); }
+        void lock() { verify( pthread_mutex_lock(&_lock) == 0 ); }
+        void unlock() { verify( pthread_mutex_unlock(&_lock) == 0 ); }
     public:
         class scoped_lock : boost::noncopyable {
             SimpleMutex& _m;
@@ -214,7 +196,7 @@ namespace mongo {
                     rm.m.lock(); 
             }
             ~scoped_lock() { 
-                assert( nLocksByMe > 0 );
+                verify( nLocksByMe > 0 );
                 if( --nLocksByMe == 0 ) {
                     rm.m.unlock(); 
                 }

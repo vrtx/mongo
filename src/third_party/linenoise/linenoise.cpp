@@ -86,9 +86,7 @@
 
 #include <conio.h>
 #include <windows.h>
-#include <stdio.h>
 #include <io.h>
-#include <errno.h>
 #define snprintf _snprintf  // Microsoft headers use underscores in some names
 #define strcasecmp _stricmp
 #define strdup _strdup
@@ -97,24 +95,24 @@
 #define STDIN_FILENO 0
 
 #else /* _WIN32 */
+
 #include <signal.h>
 #include <termios.h>
 #include <unistd.h>
 #include <stdlib.h>
-#include <stdio.h>
-#include <errno.h>
 #include <string.h>
-#include <stdlib.h>
 #include <sys/types.h>
 #include <sys/ioctl.h>
-#include <unistd.h>
 #include <cctype>
 
 #endif /* _WIN32 */
 
+#include <stdio.h>
+#include <errno.h>
 #include "linenoise.h"
 #include <string>
 #include <vector>
+#include <boost/smart_ptr/scoped_array.hpp>
 
 using std::string;
 using std::vector;
@@ -230,7 +228,7 @@ struct DynamicPrompt : public PromptBase {
     int         reverseSearchBasePromptLen;
     int         endSearchBasePromptLen;
 
-    DynamicPrompt( PromptInfo& pi, int initialDirection ) : direction( initialDirection ) {
+    DynamicPrompt( PromptBase& pi, int initialDirection ) : direction( initialDirection ) {
         forwardSearchBasePromptLen = strlen( forwardSearchBasePrompt ); // store constant text lengths
         reverseSearchBasePromptLen = strlen( reverseSearchBasePrompt );
         endSearchBasePromptLen = strlen( endSearchBasePrompt );
@@ -298,7 +296,7 @@ public:
         memcpy( textCopy, text, textLen );
         textCopy[ textLen ] = 0;
         string textCopyString( textCopy );
-        if ( lastAction == actionKill ) {
+        if ( lastAction == actionKill && size > 0 ) {
             int slot = indexToSlot[0];
             theRing[slot] = forward ?
                 theRing[slot] + textCopyString :
@@ -347,16 +345,22 @@ class InputBuffer {
     int         len;
     int         pos;
 
-    void clearScreen( PromptInfo& pi );
-    int incrementalHistorySearch( PromptInfo& pi, int startChar );
-    int completeLine( PromptInfo& pi );
+    void clearScreen( PromptBase& pi );
+    int incrementalHistorySearch( PromptBase& pi, int startChar );
+    int completeLine( PromptBase& pi );
     void refreshLine( PromptBase& pi );
 
 public:
     InputBuffer( char* buffer, int bufferLen ) : buf( buffer ), buflen( bufferLen - 1 ), len( 0 ), pos( 0 ) {
         buf[0] = 0;
     }
-    int getInputLine( PromptInfo& pi );
+    void preloadBuffer( const char* preloadText, int preloadTextLen ) {
+        strncpy( buf, preloadText, buflen );
+        buf[buflen] = 0;    // deal with edge case, note that buflen == bufferLen - 1
+        len = preloadTextLen;
+        pos = preloadTextLen;
+    }
+    int getInputLine( PromptBase& pi );
 
 };
 
@@ -393,6 +397,7 @@ static const int DELETE_KEY         = 0x107;
 static const int CTRL               = 0x200;
 static const int META               = 0x400;
 
+static const char* unsupported_term[] = { "dumb", "cons25", "emacs", NULL };
 static linenoiseCompletionCallback* completionCallback = NULL;
 
 #ifdef _WIN32
@@ -412,7 +417,24 @@ static int historyLen = 0;
 static int historyIndex = 0;
 static char** history = NULL;
 
+// used to emulate Windows command prompt on down-arrow after a recall
+// we use -2 as our "not set" value because we add 1 to the previous index on down-arrow,
+// and zero is a valid index (so -1 is a valid "previous index")
+static int historyPreviousIndex = -2;
+static bool historyRecallMostRecent = false;
+
 static void linenoiseAtExit( void );
+
+static bool isUnsupportedTerm( void ) {
+    char* term = getenv( "TERM" );
+    if ( term == NULL )
+        return false;
+    for ( int j = 0; unsupported_term[j]; ++j )
+        if ( ! strcasecmp( term, unsupported_term[j] ) ) {
+            return true;
+        }
+    return false;
+}
 
 static void beep() {
     fprintf( stderr, "\x7" );   // ctrl-G == bell/beep
@@ -492,11 +514,11 @@ static void linenoiseAtExit( void ) {
     disableRawMode();
 }
 
-static int getColumns( void ) {
+static int getScreenColumns( void ) {
     int cols;
 #ifdef _WIN32
     CONSOLE_SCREEN_BUFFER_INFO inf;
-    GetConsoleScreenBufferInfo( console_out, &inf );
+    GetConsoleScreenBufferInfo( GetStdHandle( STD_OUTPUT_HANDLE ), &inf );
     cols = inf.dwSize.X;
 #else
     struct winsize ws;
@@ -504,6 +526,19 @@ static int getColumns( void ) {
 #endif
     // cols is 0 in certain circumstances like inside debugger, which creates further issues
     return (cols > 0) ? cols : 80;
+}
+
+static int getScreenRows( void ) {
+    int rows;
+#ifdef _WIN32
+    CONSOLE_SCREEN_BUFFER_INFO inf;
+    GetConsoleScreenBufferInfo( GetStdHandle( STD_OUTPUT_HANDLE ), &inf );
+    rows = 1 + inf.srWindow.Bottom - inf.srWindow.Top;
+#else
+    struct winsize ws;
+    rows = ( ioctl( 1, TIOCGWINSZ, &ws ) == -1 ) ? 24 : ws.ws_row;
+#endif
+    return (rows > 0) ? rows : 24;
 }
 
 static void setDisplayAttribute( bool enhancedDisplay ) {
@@ -545,7 +580,7 @@ static void setDisplayAttribute( bool enhancedDisplay ) {
 
 /**
  * Display the dynamic incremental search prompt and the current user input line.
- * @param pi   PromptInfo struct holding information about the prompt and our screen position
+ * @param pi   PromptBase struct holding information about the prompt and our screen position
  * @param buf  input buffer to be displayed
  * @param len  count of characters in the buffer
  * @param pos  current cursor position within the buffer (0 <= pos <= len)
@@ -626,7 +661,7 @@ static void dynamicRefresh( PromptBase& pi, char *buf, int len, int pos ) {
 
 /**
  * Refresh the user's input line: the prompt is already onscreen and is not redrawn here
- * @param pi   PromptInfo struct holding information about the prompt and our screen position
+ * @param pi   PromptBase struct holding information about the prompt and our screen position
  */
 void InputBuffer::refreshLine( PromptBase& pi ) {
 
@@ -1000,6 +1035,11 @@ static int linenoiseReadChar( void ){
             continue;
         }
         modifierKeys = 0;
+        // AltGr is encoded as ( LEFT_CTRL_PRESSED | RIGHT_ALT_PRESSED ), so don't treat this combination as either CTRL or META
+        // we just turn off those two bits, so it is still possible to combine CTRL and/or META with an AltGr key by using right-Ctrl and/or left-Alt
+        if ( ( rec.Event.KeyEvent.dwControlKeyState & ( LEFT_CTRL_PRESSED | RIGHT_ALT_PRESSED ) ) == ( LEFT_CTRL_PRESSED | RIGHT_ALT_PRESSED ) ) {
+            rec.Event.KeyEvent.dwControlKeyState &= ~( LEFT_CTRL_PRESSED | RIGHT_ALT_PRESSED );
+        }
         if ( rec.Event.KeyEvent.dwControlKeyState & ( RIGHT_CTRL_PRESSED | LEFT_CTRL_PRESSED ) ) {
             modifierKeys |= CTRL;
         }
@@ -1104,157 +1144,10 @@ static int linenoiseReadChar( void ){
 }
 
 static void freeCompletions( linenoiseCompletions* lc ) {
-    for ( size_t i = 0; i < lc->len; ++i )
-        free( lc->cvec[i] );
-    if ( lc->cvec )
-        free( lc->cvec );
-}
-
-// break characters that may precede items to be completed
-static const char breakChars[] = " =+-/\\*?\"'`&<>;|@{([])}";
-
-/**
- * Handle command completion, using a completionCallback() routine to provide possible substitutions
- * This routine handles the mechanics of updating the user's input buffer with possible replacement of
- * text as the user selects a proposed completion string, or cancels the completion attempt.
- * @param pi     PromptInfo struct holding information about the prompt and our screen position
- */
-int InputBuffer::completeLine( PromptInfo& pi ) {
-    linenoiseCompletions lc = { 0, NULL };
-    char c = 0;
-
-    // completionCallback() expects a parsable entity, so find the previous break character and extract
-    // a copy to parse.  we also handle the case where tab is hit while not at end-of-line.
-    int startIndex = pos;
-    while ( --startIndex >= 0 ) {
-        if ( strchr( breakChars, buf[startIndex] ) ) {
-            break;
-        }
-    }
-    ++startIndex;
-    int itemLength = pos - startIndex;
-    char* parseItem = reinterpret_cast<char *>( malloc( itemLength + 1 ) );
-    int i = 0;
-    for ( ; i < itemLength; ++i ) {
-        parseItem[i] = buf[startIndex+i];
-    }
-    parseItem[i] = 0;
-
-    // get a list of completions
-    completionCallback( parseItem, &lc );
-    free( parseItem );
-    int displayLength = 0;
-    char * displayText = 0;
-    if ( lc.len == 0 ) {
-        beep();
-    }
-    else {
-        size_t i = 0;
-        size_t clen;
-
-        bool stop = false;
-        while ( ! stop ) {
-            /* Show completion or original buffer */
-            if ( i < lc.len ) {
-                clen = strlen( lc.cvec[i] );
-                displayLength = len + clen - itemLength;
-                displayText = reinterpret_cast<char *>( malloc( displayLength + 1 ) );
-                InputBuffer temp( displayText, displayLength + 1 );
-                temp.len = displayLength;
-                temp.pos = startIndex + clen;
-                int j = 0;
-                for ( ; j < startIndex; ++j )
-                    displayText[j] = buf[j];
-                strcpy( &displayText[j], lc.cvec[i] );
-                strcpy( &displayText[j+clen], &buf[pos] );
-                displayText[displayLength] = 0;
-                temp.refreshLine( pi );
-                free( displayText );
-            }
-            else {
-                refreshLine( pi );
-            }
-
-            do {
-                c = linenoiseReadChar();
-            } while ( c == static_cast<char>( -1 ) );
-
-            switch ( c ) {
-
-                case 0:
-                    freeCompletions( &lc );
-                    return -1;
-
-                case ctrlChar( 'I' ):   // ctrl-I/tab
-                    i = ( i + 1 ) % ( lc.len + 1 );
-                    if ( i == lc.len )
-                        beep();         // beep after completing cycle
-                    break;
-
-#if 0 // SERVER-4011 -- Escape only works to end command completion in Windows
-      // leaving code here for now in case this is where we will add Meta-R (revert-line) later
-                case 27: /* escape */
-                    /* Re-show original buffer */
-                    if ( i < lc.len )
-                        refreshLine( pi, buf, *len, *pos );
-                    stop = true;
-                    break;
-#endif // SERVER-4011 -- Escape only works to end command completion in Windows
-
-                default:
-                    /* Update buffer and return */
-                    if ( i < lc.len ) {
-                        clen = strlen( lc.cvec[i] );
-                        displayLength = len + clen - itemLength;
-                        displayText = (char *)malloc( displayLength + 1 );
-                        int j = 0;
-                        for ( ; j < startIndex; ++j )
-                            displayText[j] = buf[j];
-                        strcpy( &displayText[j], lc.cvec[i] );
-                        strcpy( &displayText[j+clen], &buf[pos] );
-                        displayText[displayLength] = 0;
-                        strcpy( buf, displayText );
-                        free( displayText );
-                        pos = startIndex + clen;
-                        len = displayLength;
-                    }
-                    stop = true;
-                    break;
-            }
-        }
-    }
-
-    freeCompletions( &lc );
-    return c; /* Return last read character */
-}
-
-/**
- * Clear the screen ONLY (no redisplay of anything)
- */
-void linenoiseClearScreen( void ) {
-#ifdef _WIN32
-    COORD coord = {0, 0};
-    CONSOLE_SCREEN_BUFFER_INFO inf;
-    HANDLE screenHandle = GetStdHandle( STD_OUTPUT_HANDLE );
-    GetConsoleScreenBufferInfo( screenHandle, &inf );
-    SetConsoleCursorPosition( screenHandle, coord );
-    DWORD count;
-    FillConsoleOutputCharacterA( screenHandle, ' ', inf.dwSize.X * inf.dwSize.Y, coord, &count );
-#else
-    if ( write( 1, "\x1b[H\x1b[2J", 7 ) <= 0 ) return;
-#endif
-}
-
-void InputBuffer::clearScreen( PromptInfo& pi ) {
-    linenoiseClearScreen();
-    if ( write( 1, pi.promptText, pi.promptChars ) == -1 ) return;
-#ifndef _WIN32
-    // we have to generate our own newline on line wrap on Linux
-    if ( pi.promptIndentation == 0 && pi.promptExtraLines > 0 )
-        if ( write( 1, "\n", 1 ) == -1 ) return;
-#endif
-    pi.promptCursorRowOffset = pi.promptExtraLines;
-    refreshLine( pi );
+    for ( int i = 0; i < lc->completionCount; ++i )
+        free( lc->completionStrings[i] );
+    if ( lc->completionStrings )
+        free( lc->completionStrings );
 }
 
 // convert {CTRL + 'A'}, {CTRL + 'a'} and {CTRL + ctrlChar( 'A' )} into ctrlChar( 'A' )
@@ -1276,18 +1169,285 @@ static int cleanupCtrl( int c ) {
     return c;
 }
 
+// break characters that may precede items to be completed
+static const char breakChars[] = " =+-/\\*?\"'`&<>;|@{([])}";
+
+// maximum number of completions to display without asking
+static const int completionCountCutoff = 100;
+
+/**
+ * Handle command completion, using a completionCallback() routine to provide possible substitutions
+ * This routine handles the mechanics of updating the user's input buffer with possible replacement of
+ * text as the user selects a proposed completion string, or cancels the completion attempt.
+ * @param pi     PromptBase struct holding information about the prompt and our screen position
+ */
+int InputBuffer::completeLine( PromptBase& pi ) {
+    linenoiseCompletions lc = { 0, NULL };
+    char c = 0;
+
+    // completionCallback() expects a parsable entity, so find the previous break character and extract
+    // a copy to parse.  we also handle the case where tab is hit while not at end-of-line.
+    int startIndex = pos;
+    while ( --startIndex >= 0 ) {
+        if ( strchr( breakChars, buf[startIndex] ) ) {
+            break;
+        }
+    }
+    ++startIndex;
+    int itemLength = pos - startIndex;
+    char* parseItem = reinterpret_cast<char *>( malloc( itemLength + 1 ) );
+    int i = 0;
+    for ( ; i < itemLength; ++i ) {
+        parseItem[i] = buf[startIndex + i];
+    }
+    parseItem[i] = 0;
+
+    // get a list of completions
+    completionCallback( parseItem, &lc );
+    free( parseItem );
+
+    // if no completions, we are done
+    if ( lc.completionCount == 0 ) {
+        beep();
+        freeCompletions( &lc );
+        return 0;
+    }
+
+    // at least one completion
+    int longest = 0;
+    int displayLength = 0;
+    char * displayText = 0;
+    if ( lc.completionCount == 1 ) {
+        longest = strlen( lc.completionStrings[0] );
+    }
+    else {
+        bool keepGoing = true;
+        while ( keepGoing ) {
+            for ( int j = 0; j < lc.completionCount - 1; ++j ) {
+                char c1, c2;
+                if ( ( 0 == ( c1 = lc.completionStrings[j][longest] ) ) || ( 0 == ( c2 = lc.completionStrings[j + 1][longest] ) ) || ( c1 != c2 ) ) {
+                    keepGoing = false;
+                    break;
+                }
+            }
+            if ( keepGoing ) {
+                ++longest;
+            }
+        }
+    }
+    if ( lc.completionCount != 1 ) {    // beep if ambiguous
+        beep();
+    }
+
+    // if we can extend the item, extend it and return to main loop
+    if ( longest > itemLength ) {
+        displayLength = len + longest - itemLength;
+        displayText = reinterpret_cast<char *>( malloc( displayLength + 1 ) );
+        int j = 0;
+        for ( ; j < startIndex; ++j ) {
+            displayText[j] = buf[j];
+        }
+        for ( int k = 0; k < longest; ++j, ++k ) {
+            displayText[j] = lc.completionStrings[0][k];
+        }
+        strcpy( &displayText[j], &buf[pos] );
+        strcpy( buf, displayText );
+        free( displayText );
+        pos = startIndex + longest;
+        len = displayLength;
+        refreshLine( pi );
+        return 0;
+    }
+
+    // we can't complete any further, wait for second tab
+    do {
+        c = linenoiseReadChar();
+        c = cleanupCtrl( c );
+    } while ( c == static_cast<char>( -1 ) );
+
+    // if any character other than tab, pass it to the main loop
+    if ( c != ctrlChar( 'I' ) ) {
+        freeCompletions( &lc );
+        return c;
+    }
+
+    // we got a second tab, maybe show list of possible completions
+    bool showCompletions = true;
+    bool onNewLine = false;
+    if ( lc.completionCount > completionCountCutoff ) {
+        int savePos = pos;  // move cursor to EOL to avoid overwriting the command line
+        pos = len;
+        refreshLine( pi );
+        pos = savePos;
+        printf( "\nDisplay all %d possibilities? (y or n)", lc.completionCount );
+        fflush( stdout );
+        onNewLine = true;
+        while ( c != 'y' && c != 'Y' && c != 'n' && c != 'N' && c != ctrlChar( 'C' ) ) {
+            do {
+                c = linenoiseReadChar();
+                c = cleanupCtrl( c );
+            } while ( c == static_cast<char>( -1 ) );
+        }
+        switch ( c ) {
+        case 'n':
+        case 'N':
+            showCompletions = false;
+            freeCompletions( &lc );
+            break;
+        case ctrlChar( 'C' ):
+            showCompletions = false;
+            freeCompletions( &lc );
+            if ( write( 1, "^C", 2 ) == -1 ) return -1;    // Display the ^C we got
+            c = 0;
+            break;
+        }
+    }
+
+    // if showing the list, do it the way readline does it
+    bool stopList = false;
+    if ( showCompletions ) {
+        longest = 0;
+        for ( int j = 0; j < lc.completionCount; ++j) {
+            itemLength = strlen( lc.completionStrings[j] );
+            if ( itemLength > longest ) {
+                longest = itemLength;
+            }
+        }
+        longest += 2;
+        int columnCount = pi.promptScreenColumns / longest;
+        if ( columnCount < 1) {
+            columnCount = 1;
+        }
+        if ( ! onNewLine ) {    // skip this if we showed "Display all %d possibilities?"
+            int savePos = pos;  // move cursor to EOL to avoid overwriting the command line
+            pos = len;
+            refreshLine( pi );
+            pos = savePos;
+        }
+        int pauseRow = getScreenRows() - 1;
+        int rowCount = ( lc.completionCount + columnCount - 1) / columnCount;
+        for ( int row = 0; row < rowCount; ++row ) {
+            if ( row == pauseRow ) {
+                printf( "\n--More--" );
+                fflush( stdout );
+                c = 0;
+                bool doBeep = false;
+                while ( c != ' ' && c != '\r' && c != '\n' && c != 'y' && c != 'Y' && c != 'n' && c != 'N' && c != 'q' && c != 'Q' && c != ctrlChar( 'C' ) ) {
+                    if ( doBeep ) {
+                        beep();
+                    }
+                    doBeep = true;
+                    do {
+                        c = linenoiseReadChar();
+                        c = cleanupCtrl( c );
+                    } while ( c == static_cast<char>( -1 ) );
+                }
+                switch ( c ) {
+                case ' ':
+                case 'y':
+                case 'Y':
+                    printf( "\r        \r" );
+                    pauseRow += getScreenRows() - 1;
+                    break;
+                case '\r':
+                case '\n':
+                    printf( "\r        \r" );
+                    ++pauseRow;
+                    break;
+                case 'n':
+                case 'N':
+                case 'q':
+                case 'Q':
+                    printf( "\r        \r" );
+                    stopList = true;
+                    break;
+                case ctrlChar( 'C' ):
+                    if ( write( 1, "^C", 2 ) == -1 ) return -1;    // Display the ^C we got
+                    stopList = true;
+                    break;
+                }
+            }
+            else {
+                printf( "\n" );
+            }
+            if ( stopList ) {
+                break;
+            }
+            for ( int column = 0; column < columnCount; ++column ) {
+                int index = ( column * rowCount ) + row;
+                if ( index < lc.completionCount ) {
+                    itemLength = strlen( lc.completionStrings[index] );
+                    printf( "%s", lc.completionStrings[index] );
+                    if ( ( ( column + 1 ) * rowCount ) + row < lc.completionCount ) {
+                        for ( int k = itemLength; k < longest; ++k ) {
+                            printf( " " );
+                        }
+                    }
+                }
+            }
+        }
+        fflush( stdout );
+        freeCompletions( &lc );
+    }
+
+    // display the prompt on a new line, then redisplay the input buffer
+    if ( ! stopList || c == ctrlChar( 'C' ) ) {
+        if ( write( 1, "\n", 1 ) == -1 ) return 0;
+    }
+    if ( write( 1, pi.promptText, pi.promptChars ) == -1 ) return 0;
+#ifndef _WIN32
+    // we have to generate our own newline on line wrap on Linux
+    if ( pi.promptIndentation == 0 && pi.promptExtraLines > 0 )
+        if ( write( 1, "\n", 1 ) == -1 ) return 0;
+#endif
+    pi.promptCursorRowOffset = pi.promptExtraLines;
+    refreshLine( pi );
+    return 0;
+}
+
+/**
+ * Clear the screen ONLY (no redisplay of anything)
+ */
+void linenoiseClearScreen( void ) {
+#ifdef _WIN32
+    COORD coord = {0, 0};
+    CONSOLE_SCREEN_BUFFER_INFO inf;
+    HANDLE screenHandle = GetStdHandle( STD_OUTPUT_HANDLE );
+    GetConsoleScreenBufferInfo( screenHandle, &inf );
+    SetConsoleCursorPosition( screenHandle, coord );
+    DWORD count;
+    FillConsoleOutputCharacterA( screenHandle, ' ', inf.dwSize.X * inf.dwSize.Y, coord, &count );
+#else
+    if ( write( 1, "\x1b[H\x1b[2J", 7 ) <= 0 ) return;
+#endif
+}
+
+void InputBuffer::clearScreen( PromptBase& pi ) {
+    linenoiseClearScreen();
+    if ( write( 1, pi.promptText, pi.promptChars ) == -1 ) return;
+#ifndef _WIN32
+    // we have to generate our own newline on line wrap on Linux
+    if ( pi.promptIndentation == 0 && pi.promptExtraLines > 0 )
+        if ( write( 1, "\n", 1 ) == -1 ) return;
+#endif
+    pi.promptCursorRowOffset = pi.promptExtraLines;
+    refreshLine( pi );
+}
+
 /**
  * Incremental history search -- take over the prompt and keyboard as the user types a search string,
  * deletes characters from it, changes direction, and either accepts the found line (for execution or
  * editing) or cancels.
- * @param pi        PromptInfo struct holding information about the (old, static) prompt and our screen position
+ * @param pi        PromptBase struct holding information about the (old, static) prompt and our screen position
  * @param startChar the character that began the search, used to set the initial direction
  */
-int InputBuffer::incrementalHistorySearch( PromptInfo& pi, int startChar ) {
+int InputBuffer::incrementalHistorySearch( PromptBase& pi, int startChar ) {
 
-    // add the current line to the history list so we don't have to special case it
-    history[historyLen - 1] = reinterpret_cast<char *>( realloc( history[historyLen - 1], len + 1 ) );
-    strcpy( history[historyLen - 1], buf );
+    // if not already recalling, add the current line to the history list so we don't have to special case it
+    if ( historyIndex == historyLen - 1 ) {
+        history[historyLen - 1] = reinterpret_cast<char *>( realloc( history[historyLen - 1], len + 1 ) );
+        strcpy( history[historyLen - 1], buf );
+    }
     int historyLineLength = len;
     int historyLinePosition = pos;
     char emptyBuffer[1];
@@ -1297,7 +1457,7 @@ int InputBuffer::incrementalHistorySearch( PromptInfo& pi, int startChar ) {
 
     dp.previousPromptLen = pi.previousPromptLen;
     dp.promptPreviousInputLen = pi.promptPreviousInputLen;
-    dynamicRefresh( dp, history[historyLen - 1], historyLineLength, historyLinePosition ); // draw user's text with our prompt
+    dynamicRefresh( dp, buf, historyLineLength, historyLinePosition ); // draw user's text with our prompt
 
     // loop until we get an exit character
     int c;
@@ -1307,6 +1467,7 @@ int InputBuffer::incrementalHistorySearch( PromptInfo& pi, int startChar ) {
     while ( keepLooping ) {
         c = linenoiseReadChar();
         c = cleanupCtrl( c );           // convert CTRL + <char> into normal ctrl
+
         switch ( c ) {
 
         // these characters keep the selected text but do not execute it
@@ -1463,11 +1624,12 @@ int InputBuffer::incrementalHistorySearch( PromptInfo& pi, int startChar ) {
     pb.promptScreenColumns = pi.promptScreenColumns;
     pb.previousPromptLen = dp.promptChars;
     if ( useSearchedLine ) {
+        historyRecallMostRecent = true;
         strcpy( buf, history[historyIndex] );
         len = historyLineLength;
         pos = historyLinePosition;
     }
-    dynamicRefresh( pb, buf, len, pos );              // redraw the original prompt with current input
+    dynamicRefresh( pb, buf, len, pos );    // redraw the original prompt with current input
     pi.promptPreviousInputLen = len;
     pi.promptCursorRowOffset = pi.promptExtraLines + pb.promptCursorRowOffset;
 
@@ -1475,10 +1637,12 @@ int InputBuffer::incrementalHistorySearch( PromptInfo& pi, int startChar ) {
     return c;                               // pass a character or -1 back to main loop
 }
 
-int InputBuffer::getInputLine( PromptInfo& pi ) {
+int InputBuffer::getInputLine( PromptBase& pi ) {
+
     // The latest history entry is always our current buffer
-    linenoiseHistoryAdd( "" );
+    linenoiseHistoryAdd( buf );
     historyIndex = historyLen - 1;
+    historyRecallMostRecent = false;
 
     // display the prompt
     if ( write( 1, pi.promptText, pi.promptChars ) == -1 ) return -1;
@@ -1497,6 +1661,11 @@ int InputBuffer::getInputLine( PromptInfo& pi ) {
 
     // when history search returns control to us, we execute its terminating keystroke
     int terminatingKeystroke = -1;
+
+    // if there is already text in the buffer, display it first
+    if ( len > 0 ) {
+        refreshLine( pi );
+    }
 
     // loop collecting characters, responding to ctrl characters
     while ( true ) {
@@ -1520,7 +1689,14 @@ int InputBuffer::getInputLine( PromptInfo& pi ) {
 
         // ctrl-I/tab, command completion, needs to be before switch statement
         if ( c == ctrlChar( 'I' ) && completionCallback ) {
+
+            if ( pos == 0 )             // SERVER-4967 -- in earlier versions, you could paste previous output
+                continue;               //  back into the shell ... this output may have leading tabs.
+                                        // This hack (i.e. what the old code did) prevents command completion
+                                        //  on an empty line but lets users paste text with leading tabs.
+
             killRing.lastAction = KillRing::actionOther;
+            historyRecallMostRecent = false;
 
             // completeLine does the actual completion and replacement
             c = completeLine( pi );
@@ -1558,10 +1734,10 @@ int InputBuffer::getInputLine( PromptInfo& pi ) {
         case META + LEFT_ARROW_KEY: // Emacs allows Meta, bash & readline don't
             killRing.lastAction = KillRing::actionOther;
             if ( pos > 0 ) {
-                while ( pos > 0 && !isalnum( buf[pos - 1] ) ) {
+                while ( pos > 0 && !isalnum( static_cast<unsigned char>( buf[pos - 1] ) ) ) {
                     --pos;
                 }
-                while ( pos > 0 && isalnum( buf[pos - 1] ) ) {
+                while ( pos > 0 && isalnum( static_cast<unsigned char>( buf[pos - 1] ) ) ) {
                     --pos;
                 }
                 refreshLine( pi );
@@ -1570,6 +1746,7 @@ int InputBuffer::getInputLine( PromptInfo& pi ) {
 
         case ctrlChar( 'C' ):   // ctrl-C, abort this line
             killRing.lastAction = KillRing::actionOther;
+            historyRecallMostRecent = false;
             errno = EAGAIN;
             --historyLen;
             free( history[historyLen] );
@@ -1583,17 +1760,18 @@ int InputBuffer::getInputLine( PromptInfo& pi ) {
         case META + 'c':        // meta-C, give word initial Cap
         case META + 'C':
             killRing.lastAction = KillRing::actionOther;
+            historyRecallMostRecent = false;
             if ( pos < len ) {
-                while ( pos < len && !isalnum( buf[pos] ) ) {
+                while ( pos < len && !isalnum( static_cast<unsigned char>( buf[pos] ) ) ) {
                     ++pos;
                 }
-                if ( pos < len && isalnum( buf[pos] ) ) {
+                if ( pos < len && isalnum( static_cast<unsigned char>( buf[pos] ) ) ) {
                     if ( buf[pos] >= 'a' && buf[pos] <= 'z' ) {
                         buf[pos] += 'A' - 'a';
                     }
                     ++pos;
                 }
-                while ( pos < len && isalnum( buf[pos] ) ) {
+                while ( pos < len && isalnum( static_cast<unsigned char>( buf[pos] ) ) ) {
                     if ( buf[pos] >= 'A' && buf[pos] <= 'Z' ) {
                         buf[pos] += 'a' - 'A';
                     }
@@ -1608,6 +1786,7 @@ int InputBuffer::getInputLine( PromptInfo& pi ) {
         case ctrlChar( 'D' ):
             killRing.lastAction = KillRing::actionOther;
             if ( len > 0 && pos < len ) {
+                historyRecallMostRecent = false;
                 memmove( buf + pos, buf + pos + 1, len - pos );
                 --len;
                 refreshLine( pi );
@@ -1622,11 +1801,12 @@ int InputBuffer::getInputLine( PromptInfo& pi ) {
         case META + 'd':        // meta-D, kill word to right of cursor
         case META + 'D':
             if ( pos < len ) {
+                historyRecallMostRecent = false;
                 int endingPos = pos;
-                while ( endingPos < len && !isalnum( buf[endingPos] ) ) {
+                while ( endingPos < len && !isalnum( static_cast<unsigned char>( buf[endingPos] ) ) ) {
                     ++endingPos;
                 }
-                while ( endingPos < len && isalnum( buf[endingPos] ) ) {
+                while ( endingPos < len && isalnum( static_cast<unsigned char>( buf[endingPos] ) ) ) {
                     ++endingPos;
                 }
                 killRing.kill( &buf[pos], endingPos - pos, true );
@@ -1659,10 +1839,10 @@ int InputBuffer::getInputLine( PromptInfo& pi ) {
         case META + RIGHT_ARROW_KEY: // Emacs allows Meta, bash & readline don't
             killRing.lastAction = KillRing::actionOther;
             if ( pos < len ) {
-                while ( pos < len && !isalnum( buf[pos] ) ) {
+                while ( pos < len && !isalnum( static_cast<unsigned char>( buf[pos] ) ) ) {
                     ++pos;
                 }
-                while ( pos < len && isalnum( buf[pos] ) ) {
+                while ( pos < len && isalnum( static_cast<unsigned char>( buf[pos] ) ) ) {
                     ++pos;
                 }
                 refreshLine( pi );
@@ -1672,6 +1852,7 @@ int InputBuffer::getInputLine( PromptInfo& pi ) {
         case ctrlChar( 'H' ):   // backspace/ctrl-H, delete char to left of cursor
             killRing.lastAction = KillRing::actionOther;
             if ( pos > 0 ) {
+                historyRecallMostRecent = false;
                 memmove( buf + pos - 1, buf + pos, 1 + len - pos );
                 --pos;
                 --len;
@@ -1682,11 +1863,12 @@ int InputBuffer::getInputLine( PromptInfo& pi ) {
         // meta-Backspace, kill word to left of cursor
         case META + ctrlChar( 'H' ):
             if ( pos > 0 ) {
+                historyRecallMostRecent = false;
                 int startingPos = pos;
-                while ( pos > 0 && !isalnum( buf[pos - 1] ) ) {
+                while ( pos > 0 && !isalnum( static_cast<unsigned char>( buf[pos - 1] ) ) ) {
                     --pos;
                 }
-                while ( pos > 0 && isalnum( buf[pos - 1] ) ) {
+                while ( pos > 0 && isalnum( static_cast<unsigned char>( buf[pos - 1] ) ) ) {
                     --pos;
                 }
                 killRing.kill( &buf[pos], startingPos - pos, false );
@@ -1704,6 +1886,7 @@ int InputBuffer::getInputLine( PromptInfo& pi ) {
             // so we don't display the next prompt over the previous input line
             pos = len;    // pass len as pos for EOL
             refreshLine( pi );
+            historyPreviousIndex = historyRecallMostRecent ? historyIndex : -2;
             --historyLen;
             free( history[historyLen] );
             return len;
@@ -1714,6 +1897,7 @@ int InputBuffer::getInputLine( PromptInfo& pi ) {
             len = pos;
             refreshLine( pi );
             killRing.lastAction = KillRing::actionKill;
+            historyRecallMostRecent = false;
             break;
 
         case ctrlChar( 'L' ):   // ctrl-L, clear screen and redisplay line
@@ -1724,10 +1908,11 @@ int InputBuffer::getInputLine( PromptInfo& pi ) {
         case META + 'L':
             killRing.lastAction = KillRing::actionOther;
             if ( pos < len ) {
-                while ( pos < len && !isalnum( buf[pos] ) ) {
+                historyRecallMostRecent = false;
+                while ( pos < len && !isalnum( static_cast<unsigned char>( buf[pos] ) ) ) {
                     ++pos;
                 }
-                while ( pos < len && isalnum( buf[pos] ) ) {
+                while ( pos < len && isalnum( static_cast<unsigned char>( buf[pos] ) ) ) {
                     if ( buf[pos] >= 'A' && buf[pos] <= 'Z' ) {
                         buf[pos] += 'a' - 'A';
                     }
@@ -1742,16 +1927,22 @@ int InputBuffer::getInputLine( PromptInfo& pi ) {
         case DOWN_ARROW_KEY:
         case UP_ARROW_KEY:
             killRing.lastAction = KillRing::actionOther;
+            // if not already recalling, add the current line to the history list so we don't have to special case it
+            if ( historyIndex == historyLen - 1 ) {
+                history[historyLen - 1] = reinterpret_cast<char *>( realloc( history[historyLen - 1], len + 1 ) );
+                strcpy( history[historyLen - 1], buf );
+            }
             if ( historyLen > 1 ) {
-                /* Update the current history entry before we
-                 * overwrite it with the next one. */
-                free( history[historyIndex] );
-                history[historyIndex] = strdup (buf );
-                /* Show the new entry */
                 if ( c == UP_ARROW_KEY ) {
                     c = ctrlChar( 'P' );
                 }
-                historyIndex += ( c == ctrlChar( 'P' ) ) ? -1 : 1;
+                if ( historyPreviousIndex != -2 && c != ctrlChar( 'P' ) ) {
+                    historyIndex = 1 + historyPreviousIndex;    // emulate Windows down-arrow
+                }
+                else {
+                    historyIndex += ( c == ctrlChar( 'P' ) ) ? -1 : 1;
+                }
+                historyPreviousIndex = -2;
                 if ( historyIndex < 0 ) {
                     historyIndex = 0;
                     break;
@@ -1760,6 +1951,7 @@ int InputBuffer::getInputLine( PromptInfo& pi ) {
                     historyIndex = historyLen - 1;
                     break;
                 }
+                historyRecallMostRecent = true;
                 strncpy( buf, history[historyIndex], buflen );
                 buf[buflen] = '\0';
                 len = pos = strlen( buf );  // place cursor at end of line
@@ -1775,6 +1967,7 @@ int InputBuffer::getInputLine( PromptInfo& pi ) {
         case ctrlChar( 'T' ):   // ctrl-T, transpose characters
             killRing.lastAction = KillRing::actionOther;
             if ( pos > 0 && len > 1 ) {
+                historyRecallMostRecent = false;
                 size_t leftCharPos = ( pos == len ) ? pos - 2 : pos - 1;
                 char aux = buf[leftCharPos];
                 buf[leftCharPos] = buf[leftCharPos+1];
@@ -1787,6 +1980,7 @@ int InputBuffer::getInputLine( PromptInfo& pi ) {
 
         case ctrlChar( 'U' ):   // ctrl-U, kill all characters to the left of the cursor
             if ( pos > 0 ) {
+                historyRecallMostRecent = false;
                 killRing.kill( &buf[0], pos, false );
                 len -= pos;
                 memmove( buf, buf + pos, len + 1 );
@@ -1800,10 +1994,11 @@ int InputBuffer::getInputLine( PromptInfo& pi ) {
         case META + 'U':
             killRing.lastAction = KillRing::actionOther;
             if ( pos < len ) {
-                while ( pos < len && !isalnum( buf[pos] ) ) {
+                historyRecallMostRecent = false;
+                while ( pos < len && !isalnum( static_cast<unsigned char>( buf[pos] ) ) ) {
                     ++pos;
                 }
-                while ( pos < len && isalnum( buf[pos] ) ) {
+                while ( pos < len && isalnum( static_cast<unsigned char>( buf[pos] ) ) ) {
                     if ( buf[pos] >= 'a' && buf[pos] <= 'z' ) {
                         buf[pos] += 'A' - 'a';
                     }
@@ -1816,6 +2011,7 @@ int InputBuffer::getInputLine( PromptInfo& pi ) {
         // ctrl-W, kill to whitespace (not word) to left of cursor
         case ctrlChar( 'W' ):
             if ( pos > 0 ) {
+                historyRecallMostRecent = false;
                 int startingPos = pos;
                 while ( pos > 0 && buf[pos - 1] == ' ' ) {
                     --pos;
@@ -1832,6 +2028,7 @@ int InputBuffer::getInputLine( PromptInfo& pi ) {
             break;
 
         case ctrlChar( 'Y' ):   // ctrl-Y, yank killed text
+            historyRecallMostRecent = false;
             {
                 string* restoredText = killRing.yank();
                 if ( restoredText ) {
@@ -1853,6 +2050,7 @@ int InputBuffer::getInputLine( PromptInfo& pi ) {
         case META + 'y':        // meta-Y, "yank-pop", rotate popped text
         case META + 'Y':
             if ( killRing.lastAction == KillRing::actionYank ) {
+                historyRecallMostRecent = false;
                 string* restoredText = killRing.yankPop();
                 if ( restoredText ) {
                     int restoredTextLen = restoredText->length();
@@ -1889,8 +2087,28 @@ int InputBuffer::getInputLine( PromptInfo& pi ) {
         case DELETE_KEY:
             killRing.lastAction = KillRing::actionOther;
             if ( len > 0 && pos < len ) {
+                historyRecallMostRecent = false;
                 memmove( buf + pos, buf + pos + 1, len - pos );
                 --len;
+                refreshLine( pi );
+            }
+            break;
+
+        case META + '<':        // meta-<, beginning of history
+        case META + '>':        // meta->, end of history
+            killRing.lastAction = KillRing::actionOther;
+            // if not already recalling, add the current line to the history list so we don't have to special case it
+            if ( historyIndex == historyLen - 1 ) {
+                history[historyLen - 1] = reinterpret_cast<char *>( realloc( history[historyLen - 1], len + 1 ) );
+                strcpy( history[historyLen - 1], buf );
+            }
+            if ( historyLen > 1 ) {
+                historyIndex = ( c == META + '<' ) ? 0 : historyLen - 1;
+                historyPreviousIndex = -2;
+                historyRecallMostRecent = true;
+                strncpy( buf, history[historyIndex], buflen );
+                buf[buflen] = '\0';
+                len = pos = strlen( buf );  // place cursor at end of line
                 refreshLine( pi );
             }
             break;
@@ -1898,6 +2116,7 @@ int InputBuffer::getInputLine( PromptInfo& pi ) {
         // not one of our special characters, maybe insert it in the buffer
         default:
             killRing.lastAction = KillRing::actionOther;
+            historyRecallMostRecent = false;
             if ( c > 0xFF ) {   // beep on unknown Ctrl and/or Meta keys
                 beep();
                 break;
@@ -1938,6 +2157,70 @@ int InputBuffer::getInputLine( PromptInfo& pi ) {
     return len;
 }
 
+string preloadedBufferContents;     // used with linenoisePreloadBuffer
+string preloadErrorMessage;
+
+/**
+ * linenoisePreloadBuffer provides text to be inserted into the command buffer
+ *
+ * the provided text will be processed to be usable and will be used to preload
+ * the input buffer on the next call to linenoise()
+ *
+ * @param preloadText text to begin with on the next call to linenoise()
+ */
+void linenoisePreloadBuffer( const char* preloadText ) {
+
+    if ( ! preloadText ) {
+        return;
+    }
+    int bufferSize = strlen( preloadText ) + 1;
+    boost::scoped_array< char > tempBuffer(new char[ bufferSize ]);
+    strncpy( &tempBuffer[0], preloadText, bufferSize );
+
+    // remove characters that won't display correctly
+    char* pIn = &tempBuffer[0];
+    char* pOut = pIn;
+    bool controlsStripped = false;
+    bool whitespaceSeen = false;
+    while ( *pIn ) {
+        unsigned char c = *pIn++;       // we need unsigned so chars 0x80 and above are allowed
+        if ( '\r' == c ) {              // silently skip CR
+            continue;
+        }
+        if ( '\n' == c || '\t' == c ) { // note newline or tab
+            whitespaceSeen = true;
+            continue;
+        }
+        if ( 0x7F == c || c < ' ' ) {   // remove other control characters, flag for message
+            controlsStripped = true;
+            *pOut++ = ' ';
+            continue;
+        }
+        if ( whitespaceSeen ) {         // convert whitespace to a single space
+            *pOut++ = ' ';
+            whitespaceSeen = false;
+        }
+        *pOut++ = c;
+    }
+    *pOut = 0;
+    int processedLength = pOut - &tempBuffer[0];
+    bool lineTruncated = false;
+    if ( processedLength > ( LINENOISE_MAX_LINE - 1 ) ) {
+        lineTruncated = true;
+        tempBuffer[ LINENOISE_MAX_LINE - 1 ] = 0;
+    }
+    preloadedBufferContents = &tempBuffer[0];
+    if ( controlsStripped ) {
+        preloadErrorMessage += " [Edited line: control characters were converted to spaces]\n";
+    }
+    if ( lineTruncated ) {
+        preloadErrorMessage += " [Edited line: the line length was reduced from ";
+        char buf[128];
+        snprintf( buf, sizeof( buf ), "%d to %d]\n", processedLength, ( LINENOISE_MAX_LINE - 1 ) );
+        preloadErrorMessage += buf;
+    }
+}
+
 /**
  * linenoise is a readline replacement.
  *
@@ -1950,15 +2233,45 @@ char* linenoise( const char* prompt ) {
     char buf[LINENOISE_MAX_LINE];               // buffer for user's input
     int count;
     if ( isatty( STDIN_FILENO ) ) {             // input is from a terminal
-        if ( enableRawMode() == -1 )
-            return NULL;
-        PromptInfo pi( prompt, getColumns() );  // struct to hold edited copy of prompt & misc prompt info
-        InputBuffer ib( buf, LINENOISE_MAX_LINE );
-        count = ib.getInputLine( pi );
-        disableRawMode();
-        printf( "\n" );
-        if ( count == -1 )
-            return NULL;
+        if ( ! preloadErrorMessage.empty() ) {
+            printf( "%s", preloadErrorMessage.c_str() );
+            fflush( stdout );
+            preloadErrorMessage.clear();
+        }
+        PromptInfo pi( prompt, getScreenColumns() );
+        if ( isUnsupportedTerm() ) {
+            printf( "%s", pi.promptText );
+            fflush( stdout );
+            if ( preloadedBufferContents.empty() ) {
+                if ( fgets( buf, LINENOISE_MAX_LINE, stdin ) == NULL ) {
+                    return NULL;
+                }
+                size_t len = strlen( buf );
+                while ( len && ( buf[len - 1] == '\n' || buf[len - 1] == '\r' ) ) {
+                    --len;
+                    buf[len] = '\0';
+                }
+            }
+            else {
+                InputBuffer ib( buf, LINENOISE_MAX_LINE );
+                ib.preloadBuffer( preloadedBufferContents.c_str(), preloadedBufferContents.length() );
+                preloadedBufferContents.clear();
+            }
+        }
+        else {
+            if ( enableRawMode() == -1 )
+                return NULL;
+            InputBuffer ib( buf, LINENOISE_MAX_LINE );
+            if ( ! preloadedBufferContents.empty() ) {
+                ib.preloadBuffer( preloadedBufferContents.c_str(), preloadedBufferContents.length() );
+                preloadedBufferContents.clear();
+            }
+            count = ib.getInputLine( pi );
+            disableRawMode();
+            printf( "\n" );
+            if ( count == -1 )
+                return NULL;
+        }
     }
     else {  // input not from a terminal, we should work with piped input, i.e. redirected stdin
         if ( fgets( buf, sizeof buf, stdin ) == NULL )
@@ -1983,8 +2296,8 @@ void linenoiseAddCompletion( linenoiseCompletions* lc, const char* str ) {
     size_t len = strlen( str );
     char* copy = reinterpret_cast<char *>( malloc( len + 1 ) );
     memcpy( copy, str, len + 1 );
-    lc->cvec = reinterpret_cast<char**>( realloc( lc->cvec, sizeof( char* ) * ( lc->len + 1 ) ) );
-    lc->cvec[lc->len++] = copy;
+    lc->completionStrings = reinterpret_cast<char**>( realloc( lc->completionStrings, sizeof( char* ) * ( lc->completionCount + 1 ) ) );
+    lc->completionStrings[lc->completionCount++] = copy;
 }
 
 int linenoiseHistoryAdd( const char* line ) {
@@ -2003,6 +2316,9 @@ int linenoiseHistoryAdd( const char* line ) {
         free( history[0] );
         memmove( history, history + 1, sizeof(char*) * ( historyMaxLen - 1 ) );
         --historyLen;
+        if ( --historyPreviousIndex < -1 ) {
+            historyPreviousIndex = -2;
+        }
     }
 
     // convert newlines in multi-line code to spaces before storing

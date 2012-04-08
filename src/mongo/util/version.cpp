@@ -21,6 +21,7 @@
 #include <iomanip>
 #include <sstream>
 #include <string>
+#include <fstream>
 #include "unittest.h"
 #include "version.h"
 #include "stringutils.h"
@@ -28,6 +29,9 @@
 #include "file.h"
 #include "ramlog.h"
 #include "../db/cmdline.h"
+#include "processinfo.h"
+
+#include <boost/filesystem/operations.hpp>
 
 namespace mongo {
 
@@ -38,7 +42,7 @@ namespace mongo {
      *      1.2.3-rc4-pre-
      * If you really need to do something else you'll need to fix _versionArray()
      */
-    const char versionString[] = "2.1.0-pre-";
+    const char versionString[] = "2.1.1-pre-";
 
     // See unit test for example outputs
     static BSONArray _versionArray(const char* version){
@@ -59,7 +63,7 @@ namespace mongo {
             }
             catch (...){ // not a number
                 if (curPart.empty()){
-                    assert(*c == '\0');
+                    verify(*c == '\0');
                     break;
                 }
                 else if (startsWith(curPart, "rc")){
@@ -145,6 +149,13 @@ namespace mongo {
             warned = true;
         }
 
+        if ( !ProcessInfo::blockCheckSupported() ) {
+            log() << startupWarningsLog;
+            log() << "** NOTE: your operating system version does not support the method that MongoDB" << startupWarningsLog;
+            log() << "**       uses to detect impending page faults." << startupWarningsLog;
+            log() << "**       This may result in slower performance for certain use cases" << startupWarningsLog;
+            warned = true;
+        }
 #ifdef __linux__
         if (boost::filesystem::exists("/proc/vz") && !boost::filesystem::exists("/proc/bc")) {
             log() << startupWarningsLog;
@@ -222,6 +233,31 @@ namespace mongo {
         }
 #endif
 
+#if defined(RLIMIT_NPROC) && defined(RLIMIT_NOFILE)
+        //Check that # of files rlmit > 1000 , and # of processes > # of files/2
+        const unsigned int minNumFiles = 1000;
+        const double filesToProcsRatio = 2.0;
+        struct rlimit rlnproc;
+        struct rlimit rlnofile;
+
+        if(!getrlimit(RLIMIT_NPROC,&rlnproc) && !getrlimit(RLIMIT_NOFILE,&rlnofile)){
+            if(rlnofile.rlim_cur < minNumFiles){
+                log() << startupWarningsLog;
+                log() << "** WARNING: soft rlimits too low. Number of files is "
+                        << rlnofile.rlim_cur
+                        << ", should be at least " << minNumFiles << startupWarningsLog;
+            }
+            if(rlnproc.rlim_cur < rlnofile.rlim_cur/filesToProcsRatio){
+                log() << startupWarningsLog;
+                log() << "** WARNING: soft rlimits too low. rlimits set to " << rlnproc.rlim_cur << " processes, "
+                        << rlnofile.rlim_cur << " files. Number of processes should be at least "
+                        << 1/filesToProcsRatio << " times number of files." << startupWarningsLog;
+            }
+        } else {
+            log() << startupWarningsLog;
+            log() << "** WARNING: getrlimit failed. " << errnoWithDescription() << startupWarningsLog;
+        }
+#endif
         if (warned) {
             log() << startupWarningsLog;
         }
@@ -241,22 +277,22 @@ namespace mongo {
                 return -1;
         }
 
-        return lexNumCmp(rhs.data(), lhs.data());
+        return LexNumCmp::cmp(rhs.data(), lhs.data(), false);
     }
 
     class VersionCmpTest : public UnitTest {
     public:
         void run() {
-            assert( versionCmp("1.2.3", "1.2.3") == 0 );
-            assert( versionCmp("1.2.3", "1.2.4") < 0 );
-            assert( versionCmp("1.2.3", "1.2.20") < 0 );
-            assert( versionCmp("1.2.3", "1.20.3") < 0 );
-            assert( versionCmp("2.2.3", "10.2.3") < 0 );
-            assert( versionCmp("1.2.3", "1.2.3-") > 0 );
-            assert( versionCmp("1.2.3", "1.2.3-pre") > 0 );
-            assert( versionCmp("1.2.3", "1.2.4-") < 0 );
-            assert( versionCmp("1.2.3-", "1.2.3") < 0 );
-            assert( versionCmp("1.2.3-pre", "1.2.3") < 0 );
+            verify( versionCmp("1.2.3", "1.2.3") == 0 );
+            verify( versionCmp("1.2.3", "1.2.4") < 0 );
+            verify( versionCmp("1.2.3", "1.2.20") < 0 );
+            verify( versionCmp("1.2.3", "1.20.3") < 0 );
+            verify( versionCmp("2.2.3", "10.2.3") < 0 );
+            verify( versionCmp("1.2.3", "1.2.3-") > 0 );
+            verify( versionCmp("1.2.3", "1.2.3-pre") > 0 );
+            verify( versionCmp("1.2.3", "1.2.4-") < 0 );
+            verify( versionCmp("1.2.3-", "1.2.3") < 0 );
+            verify( versionCmp("1.2.3-pre", "1.2.3") < 0 );
 
             log(1) << "versionCmpTest passed" << endl;
         }
@@ -265,22 +301,22 @@ namespace mongo {
     class VersionArrayTest : public UnitTest {
     public:
         void run() {
-            assert( _versionArray("1.2.3") == BSON_ARRAY(1 << 2 << 3 << 0) );
-            assert( _versionArray("1.2.0") == BSON_ARRAY(1 << 2 << 0 << 0) );
-            assert( _versionArray("2.0.0") == BSON_ARRAY(2 << 0 << 0 << 0) );
+            verify( _versionArray("1.2.3") == BSON_ARRAY(1 << 2 << 3 << 0) );
+            verify( _versionArray("1.2.0") == BSON_ARRAY(1 << 2 << 0 << 0) );
+            verify( _versionArray("2.0.0") == BSON_ARRAY(2 << 0 << 0 << 0) );
 
-            assert( _versionArray("1.2.3-pre-") == BSON_ARRAY(1 << 2 << 3 << -100) );
-            assert( _versionArray("1.2.0-pre-") == BSON_ARRAY(1 << 2 << 0 << -100) );
-            assert( _versionArray("2.0.0-pre-") == BSON_ARRAY(2 << 0 << 0 << -100) );
+            verify( _versionArray("1.2.3-pre-") == BSON_ARRAY(1 << 2 << 3 << -100) );
+            verify( _versionArray("1.2.0-pre-") == BSON_ARRAY(1 << 2 << 0 << -100) );
+            verify( _versionArray("2.0.0-pre-") == BSON_ARRAY(2 << 0 << 0 << -100) );
 
-            assert( _versionArray("1.2.3-rc0") == BSON_ARRAY(1 << 2 << 3 << -10) );
-            assert( _versionArray("1.2.0-rc1") == BSON_ARRAY(1 << 2 << 0 << -9) );
-            assert( _versionArray("2.0.0-rc2") == BSON_ARRAY(2 << 0 << 0 << -8) );
+            verify( _versionArray("1.2.3-rc0") == BSON_ARRAY(1 << 2 << 3 << -10) );
+            verify( _versionArray("1.2.0-rc1") == BSON_ARRAY(1 << 2 << 0 << -9) );
+            verify( _versionArray("2.0.0-rc2") == BSON_ARRAY(2 << 0 << 0 << -8) );
 
             // Note that the pre of an rc is the same as the rc itself
-            assert( _versionArray("1.2.3-rc3-pre-") == BSON_ARRAY(1 << 2 << 3 << -7) );
-            assert( _versionArray("1.2.0-rc4-pre-") == BSON_ARRAY(1 << 2 << 0 << -6) );
-            assert( _versionArray("2.0.0-rc5-pre-") == BSON_ARRAY(2 << 0 << 0 << -5) );
+            verify( _versionArray("1.2.3-rc3-pre-") == BSON_ARRAY(1 << 2 << 3 << -7) );
+            verify( _versionArray("1.2.0-rc4-pre-") == BSON_ARRAY(1 << 2 << 0 << -6) );
+            verify( _versionArray("2.0.0-rc5-pre-") == BSON_ARRAY(2 << 0 << 0 << -5) );
 
             log(1) << "versionArrayTest passed" << endl;
         }

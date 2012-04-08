@@ -54,13 +54,13 @@ namespace mongo {
                 scoped_array<SortPhaseOne>& phase1, int nidx, bool validate, 
                 double pf, int pb)
     {
-        log() << "compact extent #" << n << endl;
+        log() << "compact begin extent #" << n << " for namespace " << ns << endl;
         unsigned oldObjSize = 0; // we'll report what the old padding was
         unsigned oldObjSizeWithPadding = 0;
 
         Extent *e = ext.ext();
         e->assertOk();
-        assert( e->validates() );
+        verify( e->validates() );
         unsigned skipped = 0;
 
         {
@@ -80,17 +80,17 @@ namespace mongo {
 
         {
             log() << "compact copying records" << endl;
-            unsigned totalSize = 0;
-            int nrecs = 0;
+            long long datasize = 0;
+            long long nrecords = 0;
             DiskLoc L = e->firstRecord;
             if( !L.isNull() ) {
                 while( 1 ) {
                     Record *recOld = L.rec();
                     L = recOld->nextInExtent(L);
-                    nrecs++;
                     BSONObj objOld(recOld);
 
                     if( !validate || objOld.valid() ) {
+                        nrecords++;
                         unsigned sz = objOld.objsize();
 
                         oldObjSize += sz;
@@ -106,13 +106,13 @@ namespace mongo {
                                 lenWPadding = lenWHdr;
                             }
                         }
-                        totalSize += lenWPadding;
                         DiskLoc loc = allocateSpaceForANewRecord(ns, d, lenWPadding, false);
                         uassert(14024, "compact error out of space during compaction", !loc.isNull());
                         Record *recNew = loc.rec();
+                        datasize += recNew->netLength();
                         recNew = (Record *) getDur().writingPtr(recNew, lenWHdr);
                         addRecordToRecListInExtent(recNew, loc);
-                        memcpy(recNew->data, objOld.objdata(), sz);
+                        memcpy(recNew->data(), objOld.objdata(), sz);
 
                         {
                             // extract keys for all indexes we will be rebuilding
@@ -138,27 +138,34 @@ namespace mongo {
                     if( stopping || getDur().aCommitIsNeeded() ) {
                         e->firstRecord.writing() = L;
                         Record *r = L.rec();
-                        getDur().writingInt(r->prevOfs) = DiskLoc::NullOfs;
+                        getDur().writingInt(r->prevOfs()) = DiskLoc::NullOfs;
                         getDur().commitIfNeeded();
                         killCurrentOp.checkForInterrupt(false);
                     }
                 }
             } // if !L.isNull()
 
-            assert( d->firstExtent == ext );
-            assert( d->lastExtent != ext );
+            verify( d->firstExtent == ext );
+            verify( d->lastExtent != ext );
             DiskLoc newFirst = e->xnext;
             d->firstExtent.writing() = newFirst;
             newFirst.ext()->xprev.writing().Null();
             getDur().writing(e)->markEmpty();
             freeExtents(ext,ext);
+            // update datasize/record count for this namespace's extent
+            {
+                NamespaceDetails::Stats *s = getDur().writing(&d->stats);
+                s->datasize += datasize;
+                s->nrecords += nrecords;
+            }
+
             getDur().commitIfNeeded();
 
             { 
                 double op = 1.0;
                 if( oldObjSize ) 
                     op = static_cast<double>(oldObjSizeWithPadding)/oldObjSize;
-                log() << "compact " << nrecs << " documents " << totalSize/1000000.0 << "MB"
+                log() << "compact finished extent #" << n << " containing " << nrecords << " documents (" << datasize/1000000.0 << "MB)"
                     << " oldPadding: " << op << ' ' << static_cast<unsigned>(op*100.0)/100
                     << endl;                    
             }
@@ -170,10 +177,8 @@ namespace mongo {
     extern SortPhaseOne *precalced;
 
     bool _compact(const char *ns, NamespaceDetails *d, string& errmsg, bool validate, BSONObjBuilder& result, double pf, int pb) { 
-        //int les = d->lastExtentSize;
-
         // this is a big job, so might as well make things tidy before we start just to be nice.
-        getDur().commitNow();
+        getDur().commitIfNeeded();
 
         list<DiskLoc> extents;
         for( DiskLoc L = d->firstExtent; !L.isNull(); L = L.ext()->xnext ) 
@@ -230,10 +235,19 @@ namespace mongo {
             return false;
         }
 
-        getDur().commitNow();
+        getDur().commitIfNeeded();
 
         long long skipped = 0;
         int n = 0;
+
+        // reset data size and record counts to 0 for this namespace
+        // as we're about to tally them up again for each new extent
+        {
+            NamespaceDetails::Stats *s = getDur().writing(&d->stats);
+            s->datasize = 0;
+            s->nrecords = 0;
+        }
+
         for( list<DiskLoc>::iterator i = extents.begin(); i != extents.end(); i++ ) { 
             skipped += compactExtent(ns, d, *i, n++, indexSpecs, phase1, nidx, validate, pf, pb);
             pm.hit();
@@ -243,7 +257,7 @@ namespace mongo {
             result.append("invalidObjects", skipped);
         }
 
-        assert( d->firstExtent.ext()->xprev.isNull() );
+        verify( d->firstExtent.ext()->xprev.isNull() );
 
         // indexes will do their own progress meter?
         pm.finished();
@@ -275,7 +289,7 @@ namespace mongo {
 
         bool ok;
         {
-            writelock lk;
+            Lock::DBWrite lk(ns);
             BackgroundOperation::assertNoBgOpInProgForNs(ns.c_str());
             Client::Context ctx(ns);
             NamespaceDetails *d = nsdetails(ns.c_str());
@@ -341,7 +355,7 @@ namespace mongo {
             }
             
             {
-                writelock lk;
+                Lock::DBWrite lk(ns);
                 Client::Context ctx(ns);
                 NamespaceDetails *d = nsdetails(ns.c_str());
                 if( ! d ) {
@@ -359,11 +373,11 @@ namespace mongo {
             int pb = 0;
             if( cmdObj.hasElement("paddingFactor") ) {
                 pf = cmdObj["paddingFactor"].Number();
-                assert( pf >= 1.0 && pf <= 4.0 );
+                verify( pf >= 1.0 && pf <= 4.0 );
             }
             if( cmdObj.hasElement("paddingBytes") ) {
                 pb = (int) cmdObj["paddingBytes"].Number();
-                assert( pb >= 0 && pb <= 1024 * 1024 );
+                verify( pb >= 0 && pb <= 1024 * 1024 );
             }
 
             bool validate = !cmdObj.hasElement("validate") || cmdObj["validate"].trueValue(); // default is true at the moment

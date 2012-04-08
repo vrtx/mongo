@@ -32,7 +32,7 @@ namespace NamespaceTests {
 
     namespace IndexDetailsTests {
         class Base {
-            dblock lk;
+            Lock::GlobalWrite lk;
             Client::Context _context;
         public:
             Base() : _context(ns()) {
@@ -107,7 +107,7 @@ namespace NamespaceTests {
                 return b.obj();
             }
         private:
-            dblock lk_;
+            Lock::GlobalWrite lk_;
             IndexDetails id_;
         };
 
@@ -920,11 +920,42 @@ namespace NamespaceTests {
         
     } // namespace IndexDetailsTests
 
+    namespace IndexSpecTests {
+        
+        class Suitability {
+        public:
+            void run() {
+                IndexSpec spec( BSON( "a" << 1 ), BSONObj() );
+                ASSERT_EQUALS( HELPFUL,
+                              spec.suitability( BSON( "a" << 2 << "b" << 3 ), BSONObj() ) );
+                ASSERT_EQUALS( USELESS,
+                              spec.suitability( BSON( "b" << 3 ), BSONObj() ) );
+                ASSERT_EQUALS( HELPFUL,
+                              spec.suitability( BSON( "b" << 3 ), BSON( "a" << 1 ) ) );
+            }
+        };
+        
+        /** Lexical rather than numeric comparison should be used to determine index suitability. */
+        class NumericFieldSuitability {
+        public:
+            void run() {
+                IndexSpec spec( BSON( "1" << 1 ), BSONObj() );
+                ASSERT_EQUALS( HELPFUL,
+                              spec.suitability( BSON( "1" << 2 ), BSONObj() ) );
+                ASSERT_EQUALS( USELESS,
+                              spec.suitability( BSON( "01" << 3 ), BSON( "01" << 1 ) ) );
+                ASSERT_EQUALS( HELPFUL,
+                              spec.suitability( BSONObj(), BSON( "1" << 1 ) ) );                
+            }
+        };
+        
+    } // namespace IndexSpecTests
+    
     namespace NamespaceDetailsTests {
 
         class Base {
             const char *ns_;
-            dblock lk;
+            Lock::GlobalWrite lk;
             Client::Context _context;
         public:
             Base( const char *ns = "unittests.NamespaceDetailsTests" ) : ns_( ns ) , _context( ns ) {}
@@ -938,7 +969,7 @@ namespace NamespaceTests {
             }
         protected:
             void create() {
-                dblock lk;
+                Lock::GlobalWrite lk;
                 string err;
                 ASSERT( userCreateNS( ns(), fromjson( spec() ), err, false ) );
             }
@@ -952,7 +983,7 @@ namespace NamespaceTests {
                     if ( fileNo == -1 )
                         continue;
                     for ( int j = i.ext()->firstRecord.getOfs(); j != DiskLoc::NullOfs;
-                            j = DiskLoc( fileNo, j ).rec()->nextOfs ) {
+                          j = DiskLoc( fileNo, j ).rec()->nextOfs() ) {
                         ++count;
                     }
                 }
@@ -1134,8 +1165,8 @@ namespace NamespaceTests {
         public:
             void run() {
                 create();
-                nsd()->deletedList[ 2 ] = nsd()->cappedListOfAllDeletedRecords().drec()->nextDeleted.drec()->nextDeleted;
-                nsd()->cappedListOfAllDeletedRecords().drec()->nextDeleted.drec()->nextDeleted.writing() = DiskLoc();
+                nsd()->deletedList[ 2 ] = nsd()->cappedListOfAllDeletedRecords().drec()->nextDeleted().drec()->nextDeleted();
+                nsd()->cappedListOfAllDeletedRecords().drec()->nextDeleted().drec()->nextDeleted().writing() = DiskLoc();
                 nsd()->cappedLastDelRecLastExtent().Null();
                 NamespaceDetails *d = nsd();
                 zero( &d->capExtent );
@@ -1147,7 +1178,7 @@ namespace NamespaceTests {
                 ASSERT( nsd()->capExtent.getOfs() != 0 );
                 ASSERT( !nsd()->capFirstNewRecord.isValid() );
                 int nDeleted = 0;
-                for ( DiskLoc i = nsd()->cappedListOfAllDeletedRecords(); !i.isNull(); i = i.drec()->nextDeleted, ++nDeleted );
+                for ( DiskLoc i = nsd()->cappedListOfAllDeletedRecords(); !i.isNull(); i = i.drec()->nextDeleted(), ++nDeleted );
                 ASSERT_EQUALS( 10, nDeleted );
                 ASSERT( nsd()->cappedLastDelRecLastExtent().isNull() );
             }
@@ -1230,6 +1261,8 @@ namespace NamespaceTests {
             add< IndexDetailsTests::MissingField >();
             add< IndexDetailsTests::SubobjectMissing >();
             add< IndexDetailsTests::CompoundMissing >();
+            add< IndexSpecTests::Suitability >();
+            add< IndexSpecTests::NumericFieldSuitability >();
             add< NamespaceDetailsTests::Create >();
             add< NamespaceDetailsTests::SingleAlloc >();
             add< NamespaceDetailsTests::Realloc >();

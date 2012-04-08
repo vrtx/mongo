@@ -53,16 +53,16 @@ namespace mongo {
         }
 
         DBConfigPtr getConfig() const {
-            assert( _didInit );
+            verify( _didInit );
             return _config;
         }
         bool isShardingEnabled() const {
-            assert( _didInit );
+            verify( _didInit );
             return _config->isShardingEnabled();
         }
 
         ChunkManagerPtr getChunkManager() const {
-            assert( _didInit );
+            verify( _didInit );
             return _chunkManager;
         }
 
@@ -70,7 +70,10 @@ namespace mongo {
             return _clientInfo;
         }
 
-        void checkAuth( Auth::Level levelNeeded ) const;
+        /**
+         * @param ns - 0=use ns from message
+         */
+        void checkAuth( Auth::Level levelNeeded , const char * ns=0 ) const;
 
         // ---- remote location info -----
 

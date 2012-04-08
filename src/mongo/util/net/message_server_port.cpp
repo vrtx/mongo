@@ -43,11 +43,11 @@ namespace mongo {
 
             setThreadName( "conn" );
             
-            assert( inPort );
-            inPort->setLogLevel(1);
+            verify( inPort );
+            inPort->psock->setLogLevel(1);
             scoped_ptr<MessagingPort> p( inPort );
 
-            p->postFork();
+            p->psock->postFork();
 
             string otherSide;
 
@@ -56,13 +56,13 @@ namespace mongo {
                 LastError * le = new LastError();
                 lastError.reset( le ); // lastError now has ownership
 
-                otherSide = p->remoteString();
+                otherSide = p->psock->remoteString();
 
                 handler->connected( p.get() );
 
                 while ( ! inShutdown() ) {
                     m.reset();
-                    p->clearCounters();
+                    p->psock->clearCounters();
 
                     if ( ! p->recv(m) ) {
                         if( !cmdLine.quiet ){
@@ -75,7 +75,7 @@ namespace mongo {
                     }
 
                     handler->process( m , p.get() , le );
-                    networkCounter.hit( p->getBytesIn() , p->getBytesOut() );
+                    networkCounter.hit( p->psock->getBytesIn() , p->psock->getBytesOut() );
                 }
             }
             catch ( AssertionException& e ) {
@@ -117,7 +117,7 @@ namespace mongo {
             pms::handler = handler;
         }
 
-        virtual void accepted(MessagingPort * p) {
+        virtual void acceptedMP(MessagingPort * p) {
 
             if ( ! connTicketHolder.tryAcquire() ) {
                 log() << "connection refused because too many open connections: " << connTicketHolder.used() << endl;
@@ -141,7 +141,7 @@ namespace mongo {
                 static const size_t STACK_SIZE = 1024*1024; // if we change this we need to update the warning
 
                 struct rlimit limits;
-                verify(15887, getrlimit(RLIMIT_STACK, &limits) == 0);
+                verify(getrlimit(RLIMIT_STACK, &limits) == 0);
                 if (limits.rlim_cur > STACK_SIZE) {
                     pthread_attr_setstacksize(&attrs, (DEBUG_BUILD
                                                         ? (STACK_SIZE / 2)

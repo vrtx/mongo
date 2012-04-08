@@ -16,15 +16,20 @@
  */
 
 #include "pch.h"
-#include "dbclient.h"
-#include "../bson/util/builder.h"
-#include "../db/jsobj.h"
-#include "../db/json.h"
-#include "../db/dbmessage.h"
-#include "connpool.h"
-#include "dbclient_rs.h"
-#include "../util/background.h"
-#include "../util/timer.h"
+
+#include "mongo/client/dbclient_rs.h"
+
+#include <fstream>
+
+#include "mongo/bson/util/builder.h"
+#include "mongo/client/connpool.h"
+#include "mongo/client/dbclient.h"
+#include "mongo/client/dbclientcursor.h"
+#include "mongo/db/dbmessage.h"
+#include "mongo/db/jsobj.h"
+#include "mongo/db/json.h"
+#include "mongo/util/background.h"
+#include "mongo/util/timer.h"
 
 namespace mongo {
 
@@ -243,7 +248,7 @@ namespace mongo {
         bool wasMaster = false;
 
         // This is always true, since checked in port()
-        assert( prev.port() >= 0 );
+        verify( prev.port() >= 0 );
         if( prev.host().size() ){
             scoped_lock lk( _lock );
             for ( unsigned i=0; i<_nodes.size(); i++ ) {
@@ -287,7 +292,7 @@ namespace mongo {
         uassert(15899, str::stream() << "No suitable member found for slaveOk query in replica set: " << _name, _master >= 0 && _nodes[_master].ok);
 
         // Fall back to primary
-        assert( static_cast<unsigned>(_master) < _nodes.size() );
+        verify( static_cast<unsigned>(_master) < _nodes.size() );
         LOG(2) << "dbclient_rs getSlave no member in secondary state found, returning primary " << _nodes[ _master ] << endl;
         return _nodes[_master].addr;
     }
@@ -296,9 +301,9 @@ namespace mongo {
      * notify the monitor that server has faild
      */
     void ReplicaSetMonitor::notifySlaveFailure( const HostAndPort& server ) {
-        int x = _find( server );
+        scoped_lock lk( _lock );
+        int x = _find_inlock( server );
         if ( x >= 0 ) {
-            scoped_lock lk( _lock );
             _nodes[x].ok = false;
         }
     }
@@ -428,7 +433,7 @@ namespace mongo {
         set<string> added = diff.first;
         set<int> removed = diff.second;
 
-        assert( added.size() > 0 || removed.size() > 0 );
+        verify( added.size() > 0 || removed.size() > 0 );
         changed = true;
 
         // Delete from the end so we don't invalidate as we delete, delete indices are ascending
@@ -457,8 +462,6 @@ namespace mongo {
             }
             catch( DBException& e ){
                 warning() << "cannot connect to new host " << *i << " to replica set " << this->_name << causedBy( e ) << endl;
-                delete newConn;
-                newConn = NULL;
             }
 
             _nodes.push_back( Node( h , newConn ) );
@@ -469,6 +472,7 @@ namespace mongo {
     
 
     bool ReplicaSetMonitor::_checkConnection( DBClientConnection * c , string& maybePrimary , bool verbose , int nodesOffset ) {
+        verify( c );
         scoped_lock lk( _checkConnectionLock );
         bool isMaster = false;
         bool changed = false;
@@ -723,11 +727,11 @@ namespace mongo {
         return true;
     }
 
-    bool DBClientReplicaSet::auth(const string &dbname, const string &username, const string &pwd, string& errmsg, bool digestPassword ) {
+    bool DBClientReplicaSet::auth(const string &dbname, const string &username, const string &pwd, string& errmsg, bool digestPassword, Auth::Level * level) {
         DBClientConnection * m = checkMaster();
 
         // first make sure it actually works
-        if( ! m->auth(dbname, username, pwd, errmsg, digestPassword ) )
+        if( ! m->auth(dbname, username, pwd, errmsg, digestPassword, level ) )
             return false;
 
         // now that it does, we should save so that for a new node we can auth
@@ -796,7 +800,7 @@ namespace mongo {
         // since we don't know which server it belongs to
         // can't assume master because of slave ok
         // and can have a cursor survive a master change
-        assert(0);
+        verify(0);
     }
 
     void DBClientReplicaSet::isntMaster() { 
@@ -829,7 +833,7 @@ namespace mongo {
         _slave.reset();
     }
 
-    void DBClientReplicaSet::say( Message& toSend, bool isRetry ) {
+    void DBClientReplicaSet::say( Message& toSend, bool isRetry , string * actualServer ) {
 
         if( ! isRetry )
             _lazyState = LazyState();
@@ -846,6 +850,8 @@ namespace mongo {
                 for ( int i = _lazyState._retries; i < 3; i++ ) {
                     try {
                         DBClientConnection* slave = checkSlave();
+                        if ( actualServer )
+                            *actualServer = slave->getServerAddress();
                         slave->say( toSend );
 
                         _lazyState._lastOp = lastOp;
@@ -862,6 +868,9 @@ namespace mongo {
         }
 
         DBClientConnection* master = checkMaster();
+        if ( actualServer )
+            *actualServer = master->getServerAddress();
+
         master->say( toSend );
 
         _lazyState._lastOp = lastOp;
@@ -873,7 +882,7 @@ namespace mongo {
 
     bool DBClientReplicaSet::recv( Message& m ) {
 
-        assert( _lazyState._lastClient );
+        verify( _lazyState._lastClient );
 
         // TODO: It would be nice if we could easily wrap a conn error as a result error
         try {
@@ -930,9 +939,20 @@ namespace mongo {
                 }
                 else{
                     (void)wasMaster; // silence set-but-not-used warning
-                    // assert( wasMaster );
+                    // verify( wasMaster );
                     // printStackTrace();
                     log() << "too many retries (" << _lazyState._retries << "), could not get data from replica set" << endl;
+                }
+            }
+        }
+        else if( _lazyState._lastOp == dbQuery ){
+            // slaveOk is not set, just mark the master as bad
+
+            if( nReturned == -1 ||
+               ( hasErrField( dataObj ) &&  ! dataObj["code"].eoo() && dataObj["code"].Int() == 13435 ) )
+            {
+                if( _lazyState._lastClient == _master.get() ){
+                    isntMaster();
                 }
             }
         }

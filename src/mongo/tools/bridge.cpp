@@ -27,6 +27,7 @@ using namespace std;
 
 int port = 0;
 string destUri;
+void cleanup( int sig );
 
 class Forwarder {
 public:
@@ -42,7 +43,7 @@ public:
             try {
                 m.reset();
                 if ( !mp_.recv( m ) ) {
-                    cout << "end connection " << mp_.remoteString() << endl;
+                    cout << "end connection " << mp_.psock->remoteString() << endl;
                     mp_.shutdown();
                     break;
                 }
@@ -57,6 +58,10 @@ public:
                     }
                     Message response;
                     dest.port().call( m, response );
+
+                    // nothing to reply with?
+                    if ( response.empty() ) cleanup(0);
+
                     mp_.reply( m, response, oldId );
                     while ( exhaust ) {
                         MsgData *header = response.header();
@@ -89,7 +94,7 @@ set<MessagingPort*> ports;
 class MyListener : public Listener {
 public:
     MyListener( int port ) : Listener( "bridge" , "", port ) {}
-    virtual void accepted(MessagingPort *mp) {
+    virtual void acceptedMP(MessagingPort *mp) {
         ports.insert( mp );
         Forwarder f( *mp );
         boost::thread t( f );
@@ -98,14 +103,14 @@ public:
 
 auto_ptr< MyListener > listener;
 
-#if !defined(_WIN32)
+
 void cleanup( int sig ) {
     ListeningSockets::get()->closeAll();
     for ( set<MessagingPort*>::iterator i = ports.begin(); i != ports.end(); i++ )
         (*i)->shutdown();
     ::exit( 0 );
 }
-
+#if !defined(_WIN32)
 void myterminate() {
     rawOut( "bridge terminate() called, printing stack:" );
     printStackTrace();

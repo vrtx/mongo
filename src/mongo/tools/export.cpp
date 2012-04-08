@@ -25,6 +25,8 @@
 #include <fstream>
 #include <iostream>
 
+#include <boost/filesystem/convenience.hpp>
+#include <boost/filesystem/operations.hpp>
 #include <boost/program_options.hpp>
 
 using namespace mongo;
@@ -121,7 +123,7 @@ public:
             return "";
         }
         // Can never get here
-        assert(false);
+        verify(false);
         return "";
     }
 
@@ -136,7 +138,7 @@ public:
             size_t idx = outfile.rfind( "/" );
             if ( idx != string::npos ) {
                 string dir = outfile.substr( 0 , idx + 1 );
-                create_directories( dir );
+                boost::filesystem::create_directories( dir );
             }
             ofstream * s = new ofstream( outfile.c_str() , ios_base::out );
             fileStream.reset( s );

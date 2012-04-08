@@ -45,16 +45,17 @@ namespace mongo {
     // -----ShardingState START ----
 
     ShardingState::ShardingState()
-        : _enabled(false) , _mutex( "ShardingState" ) {
+        : _enabled(false) , _mutex( "ShardingState" ),
+          _configServerTickets( 3 /* max number of concurrent config server refresh threads */ ) {
     }
 
     void ShardingState::enable( const string& server ) {
         _enabled = true;
-        assert( server.size() );
+        verify( server.size() );
         if ( _configServer.size() == 0 )
             _configServer = server;
         else {
-            assert( server == _configServer );
+            verify( server == _configServer );
         }
     }
 
@@ -146,7 +147,7 @@ namespace mongo {
         scoped_lock lk( _mutex );
 
         ChunkManagersMap::const_iterator it = _chunks.find( ns );
-        assert( it != _chunks.end() ) ;
+        verify( it != _chunks.end() ) ;
         ShardChunkManagerPtr p = it->second;
 
         // empty shards should have version 0
@@ -160,7 +161,7 @@ namespace mongo {
         scoped_lock lk( _mutex );
 
         ChunkManagersMap::const_iterator it = _chunks.find( ns );
-        assert( it != _chunks.end() ) ;
+        verify( it != _chunks.end() ) ;
         ShardChunkManagerPtr p( it->second->clonePlus( min , max , version ) );
         _chunks[ns] = p;
     }
@@ -170,7 +171,7 @@ namespace mongo {
         scoped_lock lk( _mutex );
 
         ChunkManagersMap::const_iterator it = _chunks.find( ns );
-        assert( it != _chunks.end() ) ;
+        verify( it != _chunks.end() ) ;
         ShardChunkManagerPtr p( it->second->cloneSplit( min , max , splitKeys , version ) );
         _chunks[ns] = p;
     }
@@ -183,7 +184,23 @@ namespace mongo {
 
     bool ShardingState::trySetVersion( const string& ns , ConfigVersion& version /* IN-OUT */ ) {
 
-        // fast path - requested version is at the same version as this chunk manager
+        // Currently this function is called after a getVersion(), which is the first "check", and the assumption here
+        // is that we don't do anything nearly as long as a remote query in a thread between then and now.
+        // Otherwise it may be worth adding an additional check without the _configServerMutex below, since then it
+        // would be likely that the version may have changed in the meantime without waiting for or fetching config results.
+
+        // TODO:  Mutex-per-namespace?
+        
+        LOG( 2 ) << "trying to set shard version of " << version.toString() << " for '" << ns << "'" << endl;
+        
+        _configServerTickets.waitForTicket();
+        TicketHolderReleaser needTicketFrom( &_configServerTickets );
+
+        // fast path - double-check if requested version is at the same version as this chunk manager before verifying
+        // against config server
+        //
+        // This path will short-circuit the version set if another thread already managed to update the version in the
+        // meantime.  First check is from getVersion().
         //
         // cases:
         //   + this shard updated the version for a migrate's commit (FROM side)
@@ -191,12 +208,15 @@ namespace mongo {
         //   + two clients reloaded
         //     one triggered the 'slow path' (below)
         //     when the second's request gets here, the version is already current
+        ConfigVersion storedVersion;
         {
             scoped_lock lk( _mutex );
             ChunkManagersMap::const_iterator it = _chunks.find( ns );
-            if ( it != _chunks.end() && it->second->getVersion() == version )
+            if ( it != _chunks.end() && ( storedVersion = it->second->getVersion() ) == version )
                 return true;
         }
+        
+        LOG( 2 ) << "verifying cached version " << storedVersion.toString() << " and new version " << version.toString() << " for '" << ns << "'" << endl;
 
         // slow path - requested version is different than the current chunk manager's, if one exists, so must check for
         // newest version in the config server
@@ -209,8 +229,10 @@ namespace mongo {
         //     the secondary had no state (managers) at all, so every client request will fall here
         //   + a stale client request a version that's not current anymore
 
+        // Can't lock default mutex while creating ShardChunkManager, b/c may have to create a new connection to myself
         const string c = (_configServer == _shardHost) ? "" /* local */ : _configServer;
         ShardChunkManagerPtr p( new ShardChunkManager( c , ns , _shardName ) );
+
         {
             scoped_lock lk( _mutex );
 
@@ -428,7 +450,7 @@ namespace mongo {
                 return true;
             }
 
-            dblock lk;
+            Lock::GlobalWrite lk;
             return checkConfigOrInit( configdb , authoritative , errmsg , result , true );
         }
         
@@ -550,7 +572,7 @@ namespace mongo {
             // this is because of a weird segfault I saw and I can't see why this should ever be set
             massert( 13647 , str::stream() << "context should be empty here, is: " << cc().getContext()->ns() , cc().getContext() == 0 ); 
         
-            dblock setShardVersionLock; // TODO: can we get rid of this??
+            Lock::GlobalWrite setShardVersionLock; // TODO: can we get rid of this??
             
             if ( oldVersion > 0 && globalVersion == 0 ) {
                 // this had been reset
@@ -603,6 +625,15 @@ namespace mongo {
             }
 
             if ( globalVersion == 0 && ! authoritative ) {
+                // Needed b/c when the last chunk is moved off a shard, the version gets reset to zero, which
+                // should require a reload.
+                // TODO: Maybe a more elegant way of doing this
+                while ( shardingState.inCriticalMigrateSection() ) {
+                    dbtemprelease r;
+                    sleepmillis(2);
+                    OCCASIONALLY log() << "waiting till out of critical section for version reset" << endl;
+                }
+
                 // need authoritative for first look
                 result.append( "ns" , ns );
                 result.appendBool( "need_authoritative" , true );
@@ -683,7 +714,7 @@ namespace mongo {
      * @ return true if not in sharded mode
                      or if version for this client is ok
      */
-    bool shardVersionOk( const string& ns , string& errmsg ) {
+    bool shardVersionOk( const string& ns , string& errmsg, ConfigVersion& received, ConfigVersion& wanted ) {
         if ( ! shardingState.enabled() )
             return true;
 
@@ -715,10 +746,13 @@ namespace mongo {
             return true;
         }
 
+        // The versions we're going to compare, saved for future use
+        received = clientVersion;
+        wanted = version;
 
         if ( version == 0 && clientVersion > 0 ) {
             stringstream ss;
-            ss << "collection was dropped or this shard no longer valid version: " << version << " clientVersion: " << clientVersion;
+            ss << "collection was dropped or this shard no longer valid version";
             errmsg = ss.str();
             return false;
         }
@@ -729,7 +763,7 @@ namespace mongo {
 
         if ( clientVersion == 0 ) {
             stringstream ss;
-            ss << "client in sharded mode, but doesn't have version set for this collection: " << ns << " myVersion: " << version;
+            ss << "client in sharded mode, but doesn't have version set for this collection";
             errmsg = ss.str();
             return false;
         }
@@ -742,7 +776,7 @@ namespace mongo {
         }
 
         stringstream ss;
-        ss << "your version is too old  ns: " + ns << " global: " << version << " client: " << clientVersion;
+        ss << "your version is too old";
         errmsg = ss.str();
         return false;
     }

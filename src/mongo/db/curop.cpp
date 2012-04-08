@@ -26,6 +26,7 @@ namespace mongo {
         _client(client), 
         _wrapped(wrapped) 
     {
+        _lockType = 0;
         if ( _wrapped )
             _client->_curOp = this;
         _start = _checkpoint = 0;
@@ -39,6 +40,7 @@ namespace mongo {
     }
 
     void CurOp::_reset() {
+        _suppressFromCurop = false;
         _command = false;
         _lockType = 0;
         _dbprofile = 0;
@@ -73,7 +75,7 @@ namespace mongo {
         if ( progressMeterTotal ) {
             if ( _progressMeter.isActive() ) {
                 cout << "about to assert, old _message: " << _message << " new message:" << msg << endl;
-                assert( ! _progressMeter.isActive() );
+                verify( ! _progressMeter.isActive() );
             }
             _progressMeter.reset( progressMeterTotal , secondsBetween );
         }
@@ -119,8 +121,12 @@ namespace mongo {
         b.append("opid", _opNum);
         bool a = _active && _start;
         b.append("active", a);
-        if ( _lockType )
-            b.append("lockType" , _lockType > 0 ? "write" : "read"  );
+        if ( _lockType ) {
+            char str[2];
+            str[0] = _lockType;
+            str[1] = 0;
+            b.append("lockType" , str);
+        }
         b.append("waitingForLock" , _waitingForLock );
 
         if( a ) {
@@ -147,7 +153,7 @@ namespace mongo {
         
         if ( ! _message.empty() ) {
             if ( _progressMeter.isActive() ) {
-                StringBuilder buf(128);
+                StringBuilder buf;
                 buf << _message.toString() << " " << _progressMeter.toString();
                 b.append( "msg" , buf.str() );
                 BSONObjBuilder sub( b.subobjStart( "progress" ) );

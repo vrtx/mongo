@@ -21,12 +21,17 @@
 
 #pragma once
 
-#include "../pch.h"
-#include "dbclient.h"
-#include "redef_macros.h"
-#include "../db/dbmessage.h"
-#include "../db/matcher.h"
-#include "../util/concurrency/mvar.h"
+#include "pch.h"
+
+#include "mongo/client/dbclient.h"
+
+#include "mongo/client/redef_macros.h"
+
+#include "mongo/db/dbmessage.h"
+#include "mongo/db/matcher.h"
+#include "mongo/db/namespacestring.h"
+#include "mongo/s/util.h"
+#include "mongo/util/concurrency/mvar.h"
 
 namespace mongo {
 
@@ -86,7 +91,7 @@ namespace mongo {
 
         virtual string type() const = 0;
 
-        virtual void explain(BSONObjBuilder& b);
+        virtual void explain(BSONObjBuilder& b) = 0;
 
     protected:
 
@@ -107,6 +112,9 @@ namespace mongo {
 
         string _ns;
         BSONObj _query;
+        BSONObj _hint;
+        BSONObj _sort;
+
         int _options;
         BSONObj _fields;
         int _batchSize;
@@ -116,7 +124,9 @@ namespace mongo {
         bool _done;
     };
 
+    class ParallelConnectionMetadata;
 
+    // TODO:  We probably don't really need this as a separate class.
     class FilteringClientCursor {
     public:
         FilteringClientCursor( const BSONObj filter = BSONObj() );
@@ -125,7 +135,7 @@ namespace mongo {
         ~FilteringClientCursor();
 
         void reset( auto_ptr<DBClientCursor> cursor );
-        void reset( DBClientCursor* cursor );
+        void reset( DBClientCursor* cursor, ParallelConnectionMetadata* _pcmData = NULL );
 
         bool more();
         BSONObj next();
@@ -133,15 +143,20 @@ namespace mongo {
         BSONObj peek();
 
         DBClientCursor* raw() { return _cursor.get(); }
+        ParallelConnectionMetadata* rawMData(){ return _pcmData; }
 
         // Required for new PCursor
-        void release(){ _cursor.release(); }
+        void release(){
+            _cursor.release();
+            _pcmData = NULL;
+        }
 
     private:
         void _advance();
 
         Matcher _matcher;
         auto_ptr<DBClientCursor> _cursor;
+        ParallelConnectionMetadata* _pcmData;
 
         BSONObj _next;
         bool _done;
@@ -260,12 +275,19 @@ namespace mongo {
     class ParallelConnectionState {
     public:
 
+        ParallelConnectionState() :
+            count( 0 ), done( false ) { }
+
         ShardConnectionPtr conn;
         DBClientCursorPtr cursor;
 
         // Version information
         ChunkManagerPtr manager;
         ShardPtr primary;
+
+        // Cursor status information
+        long long count;
+        bool done;
 
         BSONObj toBSON() const;
 
@@ -337,6 +359,7 @@ namespace mongo {
         void finishInit();
 
         bool isCommand(){ return NamespaceString( _qSpec.ns() ).isCommand(); }
+        bool isExplain(){ return _qSpec.isExplain(); }
         bool isVersioned(){ return _qShards.size() == 0; }
 
         bool isSharded();
@@ -348,6 +371,8 @@ namespace mongo {
         BSONObj toBSON() const;
         string toString() const;
 
+        virtual void explain(BSONObjBuilder& b);
+
     protected:
         void _finishCons();
         void _init();
@@ -355,7 +380,7 @@ namespace mongo {
 
         virtual void _explain( map< string,list<BSONObj> >& out );
 
-        void _markStaleNS( const NamespaceString& staleNS, bool& forceReload, bool& fullReload );
+        void _markStaleNS( const NamespaceString& staleNS, const StaleConfigException& e, bool& forceReload, bool& fullReload );
         void _handleStaleNS( const NamespaceString& staleNS, bool forceReload, bool fullReload );
 
         set<Shard> _qShards;
@@ -392,12 +417,12 @@ namespace mongo {
             bool isDone() const { return _done; }
 
             bool ok() const {
-                assert( _done );
+                verify( _done );
                 return _ok;
             }
 
             BSONObj result() const {
-                assert( _done );
+                verify( _done );
                 return _res;
             }
 
@@ -441,4 +466,4 @@ namespace mongo {
 
 }
 
-#include "undef_macros.h"
+#include "mongo/client/undef_macros.h"

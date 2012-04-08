@@ -22,46 +22,69 @@ namespace mongo {
 
     class FieldPath {
     public:
-	virtual ~FieldPath();
+        virtual ~FieldPath();
 
-	FieldPath(const string &fieldPath);
-	FieldPath();
+        /**
+           Constructor.
 
-	/*
-	  Get the number of path elements in the field path.
+           @param fieldPath the dotted field path string
+         */
+        FieldPath(const string &fieldPath);
 
-	  @returns the number of path elements
-	 */
-	size_t getPathLength() const;
+        /**
+           Constructor.
+        */
+        FieldPath();
 
-	/*
-	  Get a particular path element from the path.
+        /**
+          Get the number of path elements in the field path.
 
-	  @param i the index of the path element
-	  @returns the path element
-	 */
-	string getFieldName(size_t i) const;
+          @returns the number of path elements
+         */
+        size_t getPathLength() const;
 
-	/*
-	  Get the full path.
+        /**
+          Get a particular path element from the path.
 
-	  @param fieldPrefix whether or not to include the field prefix
-	  @returns the complete field path
-	 */
-	string getPath(bool fieldPrefix) const;
+          @param i the index of the path element
+          @returns the path element
+         */
+        string getFieldName(size_t i) const;
 
-	/*
-	  Write the full path.
+        /**
+          Get the full path.
 
-	  @param outStream where to write the path to
-	  @param fieldPrefix whether or not to include the field prefix
-	*/
-	void writePath(ostream &outStream, bool fieldPrefix) const;
+          @param fieldPrefix whether or not to include the field prefix
+          @returns the complete field path
+         */
+        string getPath(bool fieldPrefix) const;
 
-	FieldPath &operator=(const FieldPath &rRHS);
+        /**
+          Write the full path.
+
+          @param outStream where to write the path to
+          @param fieldPrefix whether or not to include the field prefix
+        */
+        void writePath(ostream &outStream, bool fieldPrefix) const;
+
+        /**
+           Assignment operator.
+
+           @param rRHS right hand side of the assignment
+        */
+        FieldPath &operator=(const FieldPath &rRHS);
+
+        /**
+           Get the prefix string.
+
+           @returns the prefix string
+         */
+        static const char *getPrefix();
+
+        static const char prefix[];
 
     private:
-	vector<string> vFieldName;
+        vector<string> vFieldName;
     };
 }
 
@@ -71,11 +94,15 @@ namespace mongo {
 namespace mongo {
 
     inline size_t FieldPath::getPathLength() const {
-	return vFieldName.size();
+        return vFieldName.size();
     }
 
     inline string FieldPath::getFieldName(size_t i) const {
-	return vFieldName[i];
+        return vFieldName[i];
+    }
+
+    inline const char *FieldPath::getPrefix() {
+        return prefix;
     }
 
 }

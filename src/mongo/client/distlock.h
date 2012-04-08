@@ -71,8 +71,22 @@ namespace mongo {
 
     	static LabeledLevel logLvl;
 
-    	typedef boost::tuple<string, Date_t, Date_t, OID> PingData;
+        struct PingData {
+            
+            PingData( const string& _id , Date_t _lastPing , Date_t _remote , OID _ts ) 
+                : id(_id), lastPing(_lastPing), remote(_remote), ts(_ts){
+            }
 
+            PingData()
+                : id(""), lastPing(0), remote(0), ts(){
+            }
+            
+            string id;
+            Date_t lastPing;
+            Date_t remote;
+            OID ts;
+        };
+        
     	class LastPings {
     	public:
     	    LastPings() : _mutex( "DistributedLock::LastPings" ) {}
@@ -213,7 +227,7 @@ namespace mongo {
 
         ~dist_lock_try() {
             if ( _got ) {
-                assert( ! _other.isEmpty() );
+                verify( ! _other.isEmpty() );
                 _lock->unlock( &_other );
             }
         }
@@ -223,9 +237,9 @@ namespace mongo {
         }
 
         bool retry() {
-            assert( _lock );
-            assert( _got );
-            assert( ! _other.isEmpty() );
+            verify( _lock );
+            verify( _got );
+            verify( ! _other.isEmpty() );
 
             return _got = _lock->lock_try( _why , true, &_other );
         }
