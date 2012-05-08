@@ -23,6 +23,7 @@
 #include "../db/memconcept.h"
 #include "mongo/util/timer.h"
 #include "mongo/util/concurrency/remap_lock.h"
+#include <boost/filesystem/operations.hpp>
 
 namespace mongo {
 
@@ -119,6 +120,7 @@ namespace mongo {
             }
         }
 
+        bool creatingNewFile = !boost::filesystem::exists( filename );
         updateLength( filename, length );
 
         {
@@ -138,6 +140,26 @@ namespace mongo {
                 DWORD e = GetLastError();
                 log() << "Create/OpenFile failed " << filename << " errno:" << e << endl;
                 return 0;
+            }
+
+            // Work around issues in Windows: if we don't zero out the file ourselves, the "VDL"
+            // (Valid Data Limit) is left pointing at the start of the file and the rest of the
+            // file is "implicitly zeroed" but not actually written yet.  This causes the
+            // FlushViewOfFile() call to have to do the zeroing itself, and leads to zero-length
+            // files if the file mapping call fails.  So, just write zeros ourselves, now.
+            //
+            if ( creatingNewFile ) {
+                static const size_t ZERO_BUFFER_SIZE = 4096;
+                boost::scoped_array<char> zeros( new char[ZERO_BUFFER_SIZE] );
+                memset( zeros.get(), 0, ZERO_BUFFER_SIZE );
+                for ( size_t ptr = 0; ptr < length; ptr += ZERO_BUFFER_SIZE) {
+                    WriteFile(
+                            fd,                 // file handle
+                            zeros.get(),        // buffer to write
+                            ZERO_BUFFER_SIZE,   // buffer size in bytes
+                            NULL,               // returned bytes written (unused)
+                            NULL );             // OVERLAPPED struct (unused)
+                }
             }
         }
 
