@@ -66,21 +66,12 @@ namespace mongo {
                         // query object supplied
                         BSONObj criterion = e2.embeddedObject();
 
-                        // BSONObjIterator it( criterion );
-                        // BSONElement el;
-                        // while ( it.more() ) {
-                        //     // add each criterion to projection
-                        //     el = it.next();
-                        //     add( e.fieldName(), true );
-                        //     log() << "adding projection with criteria: " << el.toString() << endl;
-                        // }
-
                         _matcher.reset( new Matcher( criterion ) );
                         _hasMatcher = true;
                         add( e.fieldName(), true );
                     }
                     else {
-                        uassert(16231, "$elemMatch: invalid argument.  object required. ", false);
+                        uassert(16232, "$elemMatch: invalid argument.  object required. ", false);
                     }
 
                 }
@@ -244,18 +235,18 @@ namespace mongo {
             else { //Array
                 BSONObjBuilder matchedBuilder;
                 if ( _hasMatcher ) {
-                    // $elemMatch in field specifier
+                    // $elemMatch specified
 
                     BSONObjIterator it( e.embeddedObject() );
                     while ( it.more() ) {
                         // for each element in the projected array
                         BSONElement elem( it.next() );
-                        log() << "checking $elemMatch matcher: " << *_matcher->getQuery()
-                              << " checking array element: " << elem.Obj() << endl;
+                        log() << "checking $elemMatch criteria: " << *_matcher->getQuery()
+                              << " array element: " << elem.Obj() << endl;
 
                         if ( _matcher->matches( elem.Obj() ) ) {
-                            log() << " - matched field: " << elem << endl;
                             subfm.append( matchedBuilder, elem );
+                            log() << "$elemMatch matched " << elem.Obj() << endl;
                         }
                     }
 
