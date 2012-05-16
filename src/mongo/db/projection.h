@@ -22,6 +22,9 @@
 
 namespace mongo {
 
+    // Fwd Decls
+    class Matcher;
+
     /**
      * given a document and a projection specification
      * can transform the document
@@ -60,6 +63,7 @@ namespace mongo {
             _includeID(true) ,
             _skip(0) ,
             _limit(-1) ,
+            _hasMatcher(false),
             _hasNonSimple(false) {
         }
 
@@ -121,6 +125,10 @@ namespace mongo {
         // used for $slice operator
         int _skip;
         int _limit;
+
+        // used for $elemMatch field specifier
+        shared_ptr<Matcher> _matcher;
+        bool _hasMatcher;
 
         bool _hasNonSimple;
     };

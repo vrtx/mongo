@@ -17,6 +17,7 @@
 
 #include "pch.h"
 #include "projection.h"
+#include "matcher.h"
 #include "../util/mongoutils/str.h"
 
 namespace mongo {
@@ -59,6 +60,29 @@ namespace mongo {
                     else {
                         uassert(13098, "$slice only supports numbers and [skip, limit] arrays", false);
                     }
+                }
+                else if ( strcmp(e2.fieldName(), "$elemMatch") == 0 ) {
+                    if ( e2.type() == Object ) {
+                        // query object supplied
+                        BSONObj criterion = e2.embeddedObject();
+
+                        // BSONObjIterator it( criterion );
+                        // BSONElement el;
+                        // while ( it.more() ) {
+                        //     // add each criterion to projection
+                        //     el = it.next();
+                        //     add( e.fieldName(), true );
+                        //     log() << "adding projection with criteria: " << el.toString() << endl;
+                        // }
+
+                        _matcher.reset( new Matcher( criterion ) );
+                        _hasMatcher = true;
+                        add( e.fieldName(), true );
+                    }
+                    else {
+                        uassert(16231, "$elemMatch: invalid argument.  object required. ", false);
+                    }
+
                 }
                 else {
                     uassert(13097, string("Unsupported projection option: ") + obj.firstElementFieldName(), false);
@@ -202,7 +226,9 @@ namespace mongo {
         else {
             Projection& subfm = *field->second;
 
-            if ((subfm._fields.empty() && !subfm._special) || !(e.type()==Object || e.type()==Array) ) {
+            if ( ( !_hasMatcher && subfm._fields.empty() && !subfm._special ) ||
+                 !(e.type()==Object || e.type()==Array) ) {
+                // field map is empty or element is not an array or object
                 if (subfm._include)
                     b.append(e);
             }
@@ -216,9 +242,27 @@ namespace mongo {
 
             }
             else { //Array
-                BSONObjBuilder subb;
-                subfm.appendArray(subb, e.embeddedObject());
-                b.appendArray(e.fieldName(), subb.obj());
+                BSONObjBuilder matchedBuilder;
+                if ( _hasMatcher ) {
+                    // $elemMatch in field specifier
+
+                    BSONObjIterator it( e.embeddedObject() );
+                    while ( it.more() ) {
+                        // for each element in the projected array
+                        BSONElement elem( it.next() );
+                        log() << "checking $elemMatch matcher: " << *_matcher->getQuery()
+                              << " checking array element: " << elem.Obj() << endl;
+
+                        if ( _matcher->matches( elem.Obj() ) ) {
+                            log() << " - matched field: " << elem << endl;
+                            subfm.append( matchedBuilder, elem );
+                        }
+                    }
+
+                } else {
+                    subfm.appendArray( matchedBuilder, e.embeddedObject() );
+                }
+                b.appendArray( e.fieldName(), matchedBuilder.obj() );
             }
         }
     }
