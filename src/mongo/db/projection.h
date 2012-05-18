@@ -127,6 +127,7 @@ namespace mongo {
         int _limit;
 
         // used for $elemMatch field specifier
+        BSONElement _exactMatcher;
         shared_ptr<Matcher> _matcher;
         bool _hasMatcher;
 

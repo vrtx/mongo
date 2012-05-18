@@ -61,20 +61,39 @@ namespace mongo {
                         uassert(13098, "$slice only supports numbers and [skip, limit] arrays", false);
                     }
                 }
-                else if ( strcmp(e2.fieldName(), "$elemMatch") == 0 ) {
-                    if ( e2.type() == Object ) {
-                        // query object supplied
-                        BSONObj criterion = e2.embeddedObject();
+                else if ( strcmp( e2.fieldName(), "$elemMatch" ) == 0 ) {
+                    if ( e2.type() != Array ) {
 
-                        _matcher.reset( new Matcher( criterion ) );
+                        if ( e2.type() == Object ) {
+                            // query object argument
+                            BSONObj criterion = e2.embeddedObject();
+                            _matcher.reset( new Matcher( criterion ) );
+                        } else {
+                            // exact value query
+                            _exactMatcher = e2;
+                        }
                         _hasMatcher = true;
                         add( e.fieldName(), true );
                     }
                     else {
-                        uassert(16232, "$elemMatch: invalid argument.  object required. ", false);
+                        uassert(16232, "$elemMatch: invalid argument.  object or value required. ", false);
                     }
 
                 }
+                // else if ( strcmp( e.fieldName(), "$elemMatch" ) == 0) {
+                //     log() << "$elemMatch top-level specified" << endl
+                //             << " e: " << e << endl
+                //             << " obj: " << obj << endl;
+                //     if ( e2.type() == Object ) {
+                //         // query object argument
+                //         BSONObj criterion = e.embeddedObject();
+                //         _matcher.reset( new Matcher( criterion ) );
+                //     } else {
+                //         uassert(16233, string("Unsupported $elemMatch projection option: ") + obj.firstElementFieldName(), false);
+                //     }
+                //     _hasMatcher = true;
+                //     add( obj.firstElementFieldName(), true );
+                // }
                 else {
                     uassert(13097, string("Unsupported projection option: ") + obj.firstElementFieldName(), false);
                 }
@@ -209,7 +228,6 @@ namespace mongo {
 
     void Projection::append( BSONObjBuilder& b , const BSONElement& e ) const {
         FieldMap::const_iterator field = _fields.find( e.fieldName() );
-
         if (field == _fields.end()) {
             if (_include)
                 b.append(e);
@@ -219,7 +237,7 @@ namespace mongo {
 
             if ( ( !_hasMatcher && subfm._fields.empty() && !subfm._special ) ||
                  !(e.type()==Object || e.type()==Array) ) {
-                // field map is empty or element is not an array or object
+                // field map empty, or element is not an array/object
                 if (subfm._include)
                     b.append(e);
             }
@@ -236,17 +254,37 @@ namespace mongo {
                 BSONObjBuilder matchedBuilder;
                 if ( _hasMatcher ) {
                     // $elemMatch specified
+                    log() << "about to append object embedded in: " << e << endl;
 
+                    unsigned arrayPos = 0;
+                    char arrayPosStr[10];
                     BSONObjIterator it( e.embeddedObject() );
                     while ( it.more() ) {
                         // for each element in the projected array
-                        BSONElement elem( it.next() );
-                        log() << "checking $elemMatch criteria: " << *_matcher->getQuery()
-                              << " array element: " << elem.Obj() << endl;
 
-                        if ( _matcher->matches( elem.Obj() ) ) {
-                            subfm.append( matchedBuilder, elem );
-                            log() << "$elemMatch matched " << elem.Obj() << endl;
+                        BSONElement elem( it.next() );
+
+                        if ( _exactMatcher.ok() ) {
+                            log() << "checking $elemMatch exact criteria: " << _exactMatcher
+                                  << " array element: " << elem.toString() << endl;
+                            if ( _exactMatcher.valuesEqual( elem ) ) {
+                                // exact match
+                                mongo_snprintf( arrayPosStr, 10, "%d", arrayPos++ );
+                                log() << "$elemMatch matched exact value: " << e.fieldName() 
+                                      << " == "<< elem.wrap( arrayPosStr ).firstElement() << endl;
+                                subfm.append( matchedBuilder, elem.wrap( arrayPosStr ).firstElement() );
+                            }
+                        }
+                        else {
+                            log() << "checking $elemMatch matcher criteria: " << *_matcher->getQuery()
+                                  << " array element: " << elem.Obj() << endl;
+                            if ( _matcher->matches( elem.Obj() ) ) {
+                                // matcher matched
+                                mongo_snprintf( arrayPosStr, 10, "%d", arrayPos++ );
+                                log() << "$elemMatch matched " << e.fieldName() << ": "
+                                      << elem.wrap( arrayPosStr ).firstElement() << endl;
+                                subfm.append( matchedBuilder, elem.wrap( arrayPosStr ).firstElement() );
+                            }
                         }
                     }
 
