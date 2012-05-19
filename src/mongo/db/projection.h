@@ -24,6 +24,7 @@ namespace mongo {
 
     // Fwd Decls
     class Matcher;
+    class MatchDetails;
 
     /**
      * given a document and a projection specification
@@ -79,6 +80,11 @@ namespace mongo {
         BSONObj getSpec() const { return _source; }
 
         /**
+         * set the details from the matching process
+         */
+         void setMatchDetails( const MatchDetails *details );
+
+        /**
          * transforms in according to spec
          */
         BSONObj transform( const BSONObj& in ) const;
@@ -127,6 +133,7 @@ namespace mongo {
         int _limit;
 
         // used for $elemMatch field specifier
+        shared_ptr <const MatchDetails> _matchDetails;
         BSONElement _exactMatcher;
         shared_ptr<Matcher> _matcher;
         bool _hasMatcher;

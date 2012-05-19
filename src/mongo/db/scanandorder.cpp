@@ -55,7 +55,7 @@ namespace mongo {
     }
 
 
-    void ScanAndOrder::fill(BufBuilder& b, const Projection *filter, int& nout ) const {
+    void ScanAndOrder::fill(BufBuilder& b, Projection *filter, int& nout ) const {
         int n = 0;
         int nFilled = 0;
         for ( BestMap::const_iterator i = _best.begin(); i != _best.end(); i++ ) {

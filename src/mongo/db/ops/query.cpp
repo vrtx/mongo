@@ -141,7 +141,8 @@ namespace mongo {
                 }
 
                 // in some cases (clone collection) there won't be a matcher
-                if ( !c->currentMatches() ) {
+                MatchDetails details;
+                if ( !c->currentMatches( &details ) ) {
                 }
                 else if ( manager && ! manager->belongsToMe( cc ) ){
                     LOG(2) << "cursor skipping document in un-owned chunk: " << c->current() << endl;
@@ -154,7 +155,7 @@ namespace mongo {
                         last = c->currLoc();
                         n++;
 
-                        cc->fillQueryResultFromObj( b );
+                        cc->fillQueryResultFromObj( b, &details );
 
                         if ( ( ntoreturn && n >= ntoreturn ) || b.len() > MaxBytesToReturnToClientAtOnce ) {
                             c->advance();
@@ -329,7 +330,7 @@ namespace mongo {
         }
         // Explain does not obey soft limits, so matches should not be buffered.
         if ( !_parsedQuery.isExplain() ) {
-            fillQueryResultFromObj( _buf, _parsedQuery.getFields(), current( true ),
+            fillQueryResultFromObj( _buf, _parsedQuery.getFields(), current( true ), NULL,
                                    ( _parsedQuery.showDiskLoc() ? &loc : 0 ) );
             ++_bufferedMatches;
         }
