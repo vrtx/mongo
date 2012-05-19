@@ -18,7 +18,7 @@
 #include "pch.h"
 #include "projection.h"
 #include "matcher.h"
-#include "../util/mongoutils/str.h"
+#include "util/mongoutils/str.h"
 
 namespace mongo {
 
@@ -68,11 +68,12 @@ namespace mongo {
                             // query object format
                             BSONObj criterion = e2.embeddedObject();
                             _matcher.reset( new Matcher( criterion ) );
+                            _matcherType = MATCHER_ELEM_MATCH;
                         } else {
                             // exact value query format
                             _exactMatcher = e2;
+                            _matcherType = MATCHER_EXACT;
                         }
-                        _hasMatcher = true;
                         add( e.fieldName(), true );
                     }
                     else {
@@ -80,20 +81,6 @@ namespace mongo {
                     }
 
                 }
-                // else if ( strcmp( e.fieldName(), "$elemMatch" ) == 0) {
-                //     log() << "$elemMatch top-level specified" << endl
-                //             << " e: " << e << endl
-                //             << " obj: " << obj << endl;
-                //     if ( e2.type() == Object ) {
-                //         // query object argument
-                //         BSONObj criterion = e.embeddedObject();
-                //         _matcher.reset( new Matcher( criterion ) );
-                //     } else {
-                //         uassert(16233, string("Unsupported $elemMatch projection option: ") + obj.firstElementFieldName(), false);
-                //     }
-                //     _hasMatcher = true;
-                //     add( obj.firstElementFieldName(), true );
-                // }
                 else {
                     uassert(13097, string("Unsupported projection option: ") + obj.firstElementFieldName(), false);
                 }
@@ -104,8 +91,7 @@ namespace mongo {
 
             }
             else {
-
-                add (e.fieldName(), e.trueValue());
+                add(e.fieldName(), e.trueValue());
 
                 // validate input
                 if (true_false == -1) {
@@ -116,6 +102,14 @@ namespace mongo {
                     uassert( 10053 , "You cannot currently mix including and excluding fields. Contact us if this is an issue." ,
                              (bool)true_false == e.trueValue() );
                 }
+            }
+
+            // positional operator
+            string fieldName( e.fieldName() );
+            size_t opPos = fieldName.find(".$");
+            if ( opPos != string::npos ) {
+                _matcherType = MATCHER_FROM_QUERY;
+                add( fieldName.substr( 0, opPos ) , e.trueValue() );
             }
         }
     }
@@ -235,7 +229,7 @@ namespace mongo {
         else {
             Projection& subfm = *field->second;
 
-            if ( ( !_hasMatcher && subfm._fields.empty() && !subfm._special ) ||
+            if ( ( subfm._fields.empty() && !subfm._special && _matcherType == MATCHER_NONE ) ||
                  !(e.type()==Object || e.type()==Array) ) {
                 // field map empty, or element is not an array/object
                 if (subfm._include)
@@ -252,43 +246,55 @@ namespace mongo {
             }
             else { //Array
                 BSONObjBuilder matchedBuilder;
-                if ( _hasMatcher ) {
-                    // $elemMatch specified
-                    log() << "about to append object embedded in: " << e << endl;
-                    log() << "original query match details: " << (_matchDetails.get() == NULL ? "no details" : _matchDetails->toString()) << endl;
+
+                if ( _matcherType == MATCHER_FROM_QUERY ) {
+                    // $ positional operator specified
+                    uassert(16233, mongoutils::str::stream() << "positional operator (" 
+                                        << e.fieldName()
+                                        << ".$) requires corresponding field in query specifier",
+                                   _matchDetails.get() != NULL && _matchDetails->hasElemMatchKey() );
+
+                    // append as the first and only element in the projected array
+                    subfm.append( matchedBuilder, e.embeddedObject()[_matchDetails->elemMatchKey()]
+                                                  .wrap( "0" ).firstElement() );
+
+                } else if ( _matcherType != MATCHER_NONE ) {
+                    // $elemMatch operator specified
                     unsigned arrayPos = 0;
                     char arrayPosStr[10];
                     BSONObjIterator it( e.embeddedObject() );
                     while ( it.more() ) {
-                        // for each element in the projected array
+                        // for each element in the array
 
                         BSONElement elem( it.next() );
 
-                        if ( _exactMatcher.ok() ) {
-                            log() << "checking $elemMatch exact criteria: " << _exactMatcher
-                                  << " array element: " << elem.toString() << endl;
+                        if ( _matcherType == MATCHER_EXACT ) {
+                            log(5) << "checking $elemMatch exact criteria: " << _exactMatcher
+                                   << " array element: " << elem.toString() << endl;
                             if ( _exactMatcher.valuesEqual( elem ) ) {
                                 // exact match.  reset array index and append element to subfield
                                 mongo_snprintf( arrayPosStr, 10, "%d", arrayPos++ );
-                                log() << "$elemMatch matched exact value: " << e.fieldName()
-                                      << " == "<< elem.wrap( arrayPosStr ).firstElement() << endl;
+                                log(5) << "$elemMatch successful match: " << e.fieldName()
+                                       << " == "<< elem.wrap( arrayPosStr ).firstElement() << endl;
                                 subfm.append( matchedBuilder, elem.wrap( arrayPosStr ).firstElement() );
                             }
                         }
                         else {
-                            log() << "checking $elemMatch matcher criteria: " << *_matcher->getQuery()
-                                  << " array element: " << elem.toString() << endl;
+                            // MATCHER_ELEM_MATCH ($elemMatch)
+                            log(5) << "checking $elemMatch matcher criteria: " << *_matcher->getQuery()
+                                   << " array element: " << elem.toString() << endl;
                             if ( _matcher->matches( elem.Obj() ) ) {
                                 // matcher matched.  reset array index and append element to subfield
                                 mongo_snprintf( arrayPosStr, 10, "%d", arrayPos++ );
-                                log() << "$elemMatch matched " << e.fieldName() << ": "
-                                      << elem.wrap( arrayPosStr ).firstElement() << endl;
+                                log(5) << "$elemMatch matched " << e.fieldName() << ": "
+                                       << elem.wrap( arrayPosStr ).firstElement() << endl;
                                 subfm.append( matchedBuilder, elem.wrap( arrayPosStr ).firstElement() );
                             }
                         }
                     }
 
                 } else {
+                    // no subarray matcher
                     subfm.appendArray( matchedBuilder, e.embeddedObject() );
                 }
                 b.appendArray( e.fieldName(), matchedBuilder.obj() );
@@ -353,8 +359,8 @@ namespace mongo {
         return 0;
     }
 
-    void Projection::setMatchDetails( const MatchDetails *details ) { 
-        _matchDetails.reset( new MatchDetails( *details ) ); // hold a copy of the details 
+    void Projection::setMatchDetails( shared_ptr<const MatchDetails> details ) { 
+        _matchDetails = details;
     }
 
     BSONObj Projection::KeyOnly::hydrate( const BSONObj& key ) const {

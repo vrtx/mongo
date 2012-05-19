@@ -747,8 +747,10 @@ namespace mongo {
                         }
                         if (valuesMatch(z, toMatch, compareOp, em) ) {
                                 // "field.<n>" array notation was used
-                            if ( details )
-                                    details->setElemMatchKey( z.fieldName() );
+                            if ( details ) {
+                                details->requestElemMatchKey();
+                                details->setElemMatchKey( z.fieldName() );
+                            }
                             return 1;
                         }
                     }
@@ -757,8 +759,10 @@ namespace mongo {
                         BSONObj eo = z.embeddedObject();
                         int cmp = matchesDotted(fieldName, toMatch, eo, compareOp, em, false, details );
                         if ( cmp > 0 ) {
-                            if ( details )
+                            if ( details ) {
+                                details->requestElemMatchKey();
                                 details->setElemMatchKey( z.fieldName() );
+                            }
                             return 1;
                         }
                         else if ( cmp < 0 ) {
@@ -798,23 +802,29 @@ namespace mongo {
                 if ( compareOp == BSONObj::opELEM_MATCH ) {
                     if ( z.type() == Object ) {
                         if ( em._subMatcher->matches( z.embeddedObject() ) ) {
-                            if ( details )
+                            if ( details ) {
+                                details->requestElemMatchKey();
                                 details->setElemMatchKey( z.fieldName() );
+                            }
                             return 1;
                         }
                     }
                     else if ( em._subMatcherOnPrimitives ) {
                         if ( z.type() && em._subMatcher->matches( z.wrap( "" ) ) ) {
-                            if ( details )
+                            if ( details ) {
+                                details->requestElemMatchKey();
                                 details->setElemMatchKey( z.fieldName() );
+                            }
                             return 1;
                         }
                     }
                 }
                 else {
                     if ( valuesMatch( z, toMatch, compareOp, em) ) {
-                        if ( details )
+                        if ( details ) {
+                            details->requestElemMatchKey();
                             details->setElemMatchKey( z.fieldName() );
+                        }
                         return 1;
                     }
                 }

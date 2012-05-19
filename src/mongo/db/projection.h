@@ -64,7 +64,7 @@ namespace mongo {
             _includeID(true) ,
             _skip(0) ,
             _limit(-1) ,
-            _hasMatcher(false),
+            _matcherType(MATCHER_NONE),
             _hasNonSimple(false) {
         }
 
@@ -82,7 +82,7 @@ namespace mongo {
         /**
          * set the details from the matching process
          */
-         void setMatchDetails( const MatchDetails *details );
+         void setMatchDetails( shared_ptr<const MatchDetails> details );
 
         /**
          * transforms in according to spec
@@ -108,6 +108,13 @@ namespace mongo {
 
     private:
 
+        enum projMatcherType {
+            MATCHER_NONE,
+            MATCHER_EXACT,
+            MATCHER_FROM_QUERY,
+            MATCHER_ELEM_MATCH
+        };
+
         /**
          * appends e to b if user wants it
          * will descend into e if needed
@@ -132,11 +139,11 @@ namespace mongo {
         int _skip;
         int _limit;
 
-        // used for $elemMatch field specifier
-        shared_ptr <const MatchDetails> _matchDetails;
-        BSONElement _exactMatcher;
-        shared_ptr<Matcher> _matcher;
-        bool _hasMatcher;
+        // used for $elemMatch and positional ($) operator
+        shared_ptr<const MatchDetails> _matchDetails;   // array element index from query matcher
+        BSONElement _exactMatcher;                      // contains element value for exact comp
+        shared_ptr<Matcher> _matcher;                   // arbitrary $elemMatch matcher
+        projMatcherType _matcherType;                   // type of match
 
         bool _hasNonSimple;
     };

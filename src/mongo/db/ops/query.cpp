@@ -141,8 +141,8 @@ namespace mongo {
                 }
 
                 // in some cases (clone collection) there won't be a matcher
-                MatchDetails details;
-                if ( !c->currentMatches( &details ) ) {
+                shared_ptr <MatchDetails> details;
+                if ( !c->currentMatches( details.get() ) ) {
                 }
                 else if ( manager && ! manager->belongsToMe( cc ) ){
                     LOG(2) << "cursor skipping document in un-owned chunk: " << c->current() << endl;
@@ -155,7 +155,7 @@ namespace mongo {
                         last = c->currLoc();
                         n++;
 
-                        cc->fillQueryResultFromObj( b, &details );
+                        cc->fillQueryResultFromObj( b, details );
 
                         if ( ( ntoreturn && n >= ntoreturn ) || b.len() > MaxBytesToReturnToClientAtOnce ) {
                             c->advance();
@@ -330,7 +330,8 @@ namespace mongo {
         }
         // Explain does not obey soft limits, so matches should not be buffered.
         if ( !_parsedQuery.isExplain() ) {
-            fillQueryResultFromObj( _buf, _parsedQuery.getFields(), current( true ), NULL,
+            fillQueryResultFromObj( _buf, _parsedQuery.getFields(),
+                                    current( true ), shared_ptr<const MatchDetails>(),
                                    ( _parsedQuery.showDiskLoc() ? &loc : 0 ) );
             ++_bufferedMatches;
         }
@@ -566,11 +567,14 @@ namespace mongo {
     }
 
     bool QueryResponseBuilder::currentMatches() {
-        MatchDetails details;
-        if ( _cursor->currentMatches( &details ) ) {
+        shared_ptr<MatchDetails> details( new MatchDetails );
+        if ( _cursor->currentMatches( details.get() ) ) {
+            shared_ptr<Projection> proj = _parsedQuery.getFieldPtr();
+            if ( proj.get() )
+                proj->setMatchDetails( details );
             return true;
         }
-        _explain->noteIterate( false, false, details.hasLoadedRecord(), false );
+        _explain->noteIterate( false, false, details->hasLoadedRecord(), false );
         return false;
     }
 
