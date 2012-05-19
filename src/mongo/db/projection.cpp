@@ -277,7 +277,7 @@ namespace mongo {
                         }
                         else {
                             log() << "checking $elemMatch matcher criteria: " << *_matcher->getQuery()
-                                  << " array element: " << elem.Obj() << endl;
+                                  << " array element: " << elem.toString() << endl;
                             if ( _matcher->matches( elem.Obj() ) ) {
                                 // matcher matched
                                 mongo_snprintf( arrayPosStr, 10, "%d", arrayPos++ );
