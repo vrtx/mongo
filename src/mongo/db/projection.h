@@ -22,7 +22,7 @@
 
 namespace mongo {
 
-    // Fwd Decls
+    // fwd decls
     class Matcher;
     class MatchDetails;
 
@@ -80,7 +80,7 @@ namespace mongo {
         BSONObj getSpec() const { return _source; }
 
         /**
-         * set the details from the matching process
+         * set details provided by the query matcher
          */
          void setMatchDetails( shared_ptr<const MatchDetails> details );
 
