@@ -65,11 +65,11 @@ namespace mongo {
                     if ( e2.type() != Array ) {
 
                         if ( e2.type() == Object ) {
-                            // query object argument
+                            // query object format
                             BSONObj criterion = e2.embeddedObject();
                             _matcher.reset( new Matcher( criterion ) );
                         } else {
-                            // exact value query
+                            // exact value query format
                             _exactMatcher = e2;
                         }
                         _hasMatcher = true;
@@ -255,7 +255,7 @@ namespace mongo {
                 if ( _hasMatcher ) {
                     // $elemMatch specified
                     log() << "about to append object embedded in: " << e << endl;
-
+                    log() << "original query match details: " << (_matchDetails.get() == NULL ? "no details" : _matchDetails->toString()) << endl;
                     unsigned arrayPos = 0;
                     char arrayPosStr[10];
                     BSONObjIterator it( e.embeddedObject() );
@@ -268,9 +268,9 @@ namespace mongo {
                             log() << "checking $elemMatch exact criteria: " << _exactMatcher
                                   << " array element: " << elem.toString() << endl;
                             if ( _exactMatcher.valuesEqual( elem ) ) {
-                                // exact match
+                                // exact match.  reset array index and append element to subfield
                                 mongo_snprintf( arrayPosStr, 10, "%d", arrayPos++ );
-                                log() << "$elemMatch matched exact value: " << e.fieldName() 
+                                log() << "$elemMatch matched exact value: " << e.fieldName()
                                       << " == "<< elem.wrap( arrayPosStr ).firstElement() << endl;
                                 subfm.append( matchedBuilder, elem.wrap( arrayPosStr ).firstElement() );
                             }
@@ -279,7 +279,7 @@ namespace mongo {
                             log() << "checking $elemMatch matcher criteria: " << *_matcher->getQuery()
                                   << " array element: " << elem.Obj() << endl;
                             if ( _matcher->matches( elem.Obj() ) ) {
-                                // matcher matched
+                                // matcher matched.  reset array index and append element to subfield
                                 mongo_snprintf( arrayPosStr, 10, "%d", arrayPos++ );
                                 log() << "$elemMatch matched " << e.fieldName() << ": "
                                       << elem.wrap( arrayPosStr ).firstElement() << endl;
@@ -351,6 +351,10 @@ namespace mongo {
             return p.release();
 
         return 0;
+    }
+
+    void Projection::setMatchDetails( const MatchDetails *details ) { 
+        _matchDetails.reset( new MatchDetails( *details ) ); // hold a copy of the details 
     }
 
     BSONObj Projection::KeyOnly::hydrate( const BSONObj& key ) const {

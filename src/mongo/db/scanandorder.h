@@ -52,10 +52,12 @@ namespace mongo {
        _ response size limit from runquery; push it up a bit.
     */
 
-    inline void fillQueryResultFromObj(BufBuilder& bb, const Projection *filter, const BSONObj& js,
-                                       const DiskLoc* loc=NULL) {
+    inline void fillQueryResultFromObj(BufBuilder& bb, Projection *filter, const BSONObj& js,
+                                       const MatchDetails *details = NULL, const DiskLoc* loc=NULL) {
         if ( filter ) {
             BSONObjBuilder b( bb );
+            if (details)
+                filter->setMatchDetails(details);
             filter->transform( js , b );
             if (loc)
                 b.append("$diskLoc", loc->toBSONObj());
@@ -93,7 +95,7 @@ namespace mongo {
         void add(const BSONObj &o, const DiskLoc* loc);
 
         /* scanning complete. stick the query result in b for n objects. */
-        void fill(BufBuilder& b, const Projection *filter, int& nout ) const;
+        void fill(BufBuilder& b, Projection *filter, int& nout ) const;
 
     /** Functions for testing. */
     protected:
