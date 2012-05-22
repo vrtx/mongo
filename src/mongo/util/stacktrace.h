@@ -14,3 +14,5 @@ namespace mongo {
     void printStackTrace(std::ostream &os=std::cout);
 
 }  // namespace mongo
+
+extern "C" void _c_printStackTrace();

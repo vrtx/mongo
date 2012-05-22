@@ -781,11 +781,13 @@ JS_DestroyRuntime(JSRuntime *rt)
 #endif
     js_FinishPropertyTree(rt);
     free(rt);
+    JS_ArenaFinish();
 }
 
 JS_PUBLIC_API(void)
 JS_ShutDown(void)
 {
+    JS_ArenaShutDown();
     js_FinishDtoa();
 #ifdef JS_THREADSAFE
     js_CleanupLocks();
@@ -1659,6 +1661,7 @@ JS_PUBLIC_API(void *)
 JS_malloc(JSContext *cx, size_t nbytes)
 {
     void *p;
+    // printf("malloc (requested %u bytes).\n", nbytes);
 
     JS_ASSERT(nbytes != 0);
     if (nbytes == 0)
@@ -1666,6 +1669,7 @@ JS_malloc(JSContext *cx, size_t nbytes)
 
     p = malloc(nbytes);
     if (!p) {
+        printf("OOM from malloc (requested %u bytes).\n", nbytes);
         JS_ReportOutOfMemory(cx);
         return NULL;
     }
@@ -1678,8 +1682,10 @@ JS_PUBLIC_API(void *)
 JS_realloc(JSContext *cx, void *p, size_t nbytes)
 {
     p = realloc(p, nbytes);
-    if (!p)
+    if (!p) {
+        printf("OOM from realloc (requested %u bytes).\n", nbytes);
         JS_ReportOutOfMemory(cx);
+    }
     return p;
 }
 
@@ -1878,6 +1884,7 @@ JS_GC(JSContext *cx)
      */
     js_RunCloseHooks(cx);
 #endif
+    JS_ArenaFinish();
 }
 
 JS_PUBLIC_API(void)

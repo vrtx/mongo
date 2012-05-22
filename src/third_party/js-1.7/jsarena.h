@@ -70,6 +70,7 @@ struct JSArenaStats {
     char        *name;          /* name for debugging */
     uint32      narenas;        /* number of arenas in pool */
     uint32      nallocs;        /* number of JS_ARENA_ALLOCATE() calls */
+    uint32      nreclaims;      /* number of reclaims from freeArenas */
     uint32      nmallocs;       /* number of malloc() calls */
     uint32      ndeallocs;      /* number of lifetime deallocations */
     uint32      ngrows;         /* number of JS_ARENA_GROW() calls */

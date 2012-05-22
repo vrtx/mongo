@@ -89,10 +89,12 @@ namespace mongo {
             if ( copyLen != -1 ) {
                 c_ = (char*)malloc( copyLen );
                 memcpy( c_, c, copyLen );
+                cout << "bindata holder malloced: " << c_ << "bytes." << endl;
             }
         }
         ~BinDataHolder() {
             if ( iFree_ )
+                cout << "bindata holder freed." << endl;
                 free( c_ );
         }
         char *c_;

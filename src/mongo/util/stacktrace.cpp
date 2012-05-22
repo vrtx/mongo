@@ -34,6 +34,10 @@ namespace mongo {
     }
 }
 
+extern "C" void _c_printStackTrace() {
+    mongo::printStackTrace();
+}
+
 #else
 
 namespace mongo {   

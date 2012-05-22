@@ -847,6 +847,9 @@ ReportError(JSContext *cx, const char *message, JSErrorReport *reportp)
     }
 }
 
+
+extern void c_printStackTrace();
+
 /*
  * We don't post an exception in this case, since doing so runs into
  * complications of pre-allocating an exception object which required
@@ -860,6 +863,7 @@ js_ReportOutOfMemory(JSContext *cx)
     JSStackFrame *fp;
     JSErrorReport report;
     JSErrorReporter onError = cx->errorReporter;
+    _c_printStackTrace();
 
     /* Get the message for this error, but we won't expand any arguments. */
     const JSErrorFormatString *efs =
