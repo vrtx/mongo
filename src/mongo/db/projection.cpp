@@ -164,7 +164,6 @@ namespace mongo {
                                                 new Matcher(fieldObj, true ) ) );
                 }
             }
-            // log() << "Number of matchers: " << matchers.count() << endl;
         }
 
         BSONObjIterator i(in);
@@ -266,7 +265,7 @@ namespace mongo {
     }
 
     void Projection::append( BSONObjBuilder& b , const BSONElement& e, const MatchDetails* details,
-                              const ArrayOpType arrayOpType ) const {
+                             const ArrayOpType arrayOpType ) const {
 
         FieldMap::const_iterator field = _fields.find( e.fieldName() );
         if (field == _fields.end()) {
@@ -292,8 +291,10 @@ namespace mongo {
             else { //Array
                 BSONObjBuilder matchedBuilder;
                 if ( details && arrayOpType == ARRAY_OP_POSITIONAL ) {
-                    // LEFT OFF HERE: check if _this_ projection is positional.
                     // $ positional operator specified
+
+                    log() << "checking if element " << e << " is in spec: " << getSpec()
+                          << " match details: " << *details << endl;
                     uassert(16233, mongoutils::str::stream() << "positional operator ("
                                         << e.fieldName()
                                         << ".$) requires corresponding field in query specifier",

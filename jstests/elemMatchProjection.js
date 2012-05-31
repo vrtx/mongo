@@ -33,16 +33,6 @@ assert.eq( { aa:1, dd:5 },
            t.find( { group:3, 'y.dd':5 }, { 'y.$':1 } ).toArray()[0].y[0],
            "single object match 3" );
 
-// FIXME: multiple array matches with one projection
-assert.eq( 2,
-           t.find( { group:3, 'y.bb':2, 'x.d':5 }, { 'y.$':1 } ).toArray()[0].y[0].bb,
-           "multi match, single proj 1" );
-
-// FIXME: multiple array matches with one projection
-assert.eq( 2,
-           t.find( { group:3, 'y.cc':3, 'x.b':2 }, { 'x.$':1 } ).toArray()[0].x[0].b,
-           "multi match, single proj 2" );
-
 if (false) {
 
     assert.eq( { dd:5 }, // FUTURE: positional projection should fields after the $
@@ -60,6 +50,15 @@ if (false) {
     assert.eq( 2,        // FUTURE: allow multiple results from same matcher
                t.find( { group:2, x: { $elemMatch: { a:1 } } }, { 'x.$':1 } ).toArray()[0].x.length,
                "multi element match, single proj" );
+
+    assert.eq( 2,       // FUTURE: multiple array matches with one projection
+               t.find( { group:3, 'y.bb':2, 'x.d':5 }, { 'y.$':1 } ).toArray()[0].y[0].bb,
+               "multi match, single proj 1" );
+
+    assert.eq( 2,       // FUTURE: multiple array matches with one projection
+              t.find( { group:3, 'y.cc':3, 'x.b':2 }, { 'x.$':1 } ).toArray()[0].x[0].b,
+              "multi match, single proj 2" );
+
 }
 
 //
