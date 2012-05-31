@@ -58,13 +58,18 @@ namespace mongo {
             int _stringSize;
         };
 
+        enum ArrayOpType {
+            ARRAY_OP_NORMAL = 0,
+            ARRAY_OP_ELEM_MATCH,
+            ARRAY_OP_POSITIONAL
+        };
+
         Projection() :
             _include(true) ,
             _special(false) ,
             _includeID(true) ,
             _skip(0) ,
             _limit(-1) ,
-            _matcherType(MATCHER_NONE),
             _hasNonSimple(false) {
         }
 
@@ -80,20 +85,15 @@ namespace mongo {
         BSONObj getSpec() const { return _source; }
 
         /**
-         * set details provided by the query matcher
-         */
-         void setMatchDetails( shared_ptr<const MatchDetails> details );
-
-        /**
          * transforms in according to spec
          */
-        BSONObj transform( const BSONObj& in ) const;
+        BSONObj transform( const BSONObj& in, const MatchDetails* details = NULL ) const;
 
 
         /**
          * transforms in according to spec
          */
-        void transform( const BSONObj& in , BSONObjBuilder& b ) const;
+        void transform( const BSONObj& in , BSONObjBuilder& b, const MatchDetails* details = NULL ) const;
 
 
         /**
@@ -106,21 +106,24 @@ namespace mongo {
 
         bool includeID() const { return _includeID; }
 
-    private:
+        /**
+         *  get the type of array operator in the projection
+         *  @param      spec  Optional specifier to check (uses _source if unspecified)
+         *  @return     ARRAY_OP_NORMAL if no array projection modifier,
+         *              ARRAY_OP_ELEM_MATCH if $elemMatch specifier,
+         *              ARRAY_OP_POSITIONAL if '.$' projection specified
+         */
+        ArrayOpType getArrayOpType( const BSONObj spec ) const;
+        ArrayOpType getArrayOpType() const;
 
-        enum projMatcherType {
-            MATCHER_NONE,
-            MATCHER_EXACT,
-            MATCHER_FROM_QUERY,
-            MATCHER_ELEM_MATCH
-        };
+    private:
 
         /**
          * appends e to b if user wants it
          * will descend into e if needed
          */
-        void append( BSONObjBuilder& b , const BSONElement& e ) const;
-
+        void append( BSONObjBuilder& b , const BSONElement& e, const MatchDetails* details = NULL,
+                     const ArrayOpType arrayOpType = ARRAY_OP_NORMAL ) const;
 
         void add( const string& field, bool include );
         void add( const string& field, int skip, int limit );
@@ -138,12 +141,6 @@ namespace mongo {
         // used for $slice operator
         int _skip;
         int _limit;
-
-        // used for $elemMatch and positional ($) operator
-        shared_ptr<const MatchDetails> _matchDetails;   // array element index from query matcher
-        BSONElement _exactMatcher;                      // contains element value for exact comp
-        shared_ptr<Matcher> _matcher;                   // arbitrary $elemMatch matcher
-        projMatcherType _matcherType;                   // type of match
 
         bool _hasNonSimple;
     };

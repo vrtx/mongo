@@ -28,6 +28,7 @@ namespace mongo {
 
         BSONObjIterator i( o );
         int true_false = -1;
+        bool hasPositional = false;
         while ( i.more() ) {
             BSONElement e = i.next();
 
@@ -62,36 +63,21 @@ namespace mongo {
                     }
                 }
                 else if ( strcmp( e2.fieldName(), "$elemMatch" ) == 0 ) {
-                    if ( e2.type() != Array ) {
-
-                        if ( e2.type() == Object ) {
-                            // query object format
-                            BSONObj criterion = e2.embeddedObject();
-                            _matcher.reset( new Matcher( criterion ) );
-                            _matcherType = MATCHER_ELEM_MATCH;
-                        } else {
-                            // exact value query format
-                            _exactMatcher = e2;
-                            _matcherType = MATCHER_EXACT;
-                        }
-                        add( e.fieldName(), true );
-                    }
-                    else {
-                        uassert(16232, "$elemMatch: invalid argument.  object or value required. ", false);
-                    }
-
+                    uassert( 16237, "elemMatch: invalid argument.  object required.",
+                             e2.type() == Object );
+                    add( e.fieldName(), true );
                 }
                 else {
-                    uassert(13097, string("Unsupported projection option: ") + obj.firstElementFieldName(), false);
+                    uasserted(13097, string("Unsupported projection option: ") +
+                                     obj.firstElementFieldName() );
                 }
 
             }
             else if (!strcmp(e.fieldName(), "_id") && !e.trueValue()) {
                 _includeID = false;
-
             }
             else {
-                add(e.fieldName(), e.trueValue());
+                add( e.fieldName(), e.trueValue() );
 
                 // validate input
                 if (true_false == -1) {
@@ -99,16 +85,20 @@ namespace mongo {
                     _include = !e.trueValue();
                 }
                 else {
-                    uassert( 10053 , "You cannot currently mix including and excluding fields. Contact us if this is an issue." ,
+                    uassert( 10053 , "You cannot currently mix including and excluding fields. "
+                                     "Contact us if this is an issue." ,
                              (bool)true_false == e.trueValue() );
                 }
             }
-
-            // positional operator
             string fieldName( e.fieldName() );
             size_t opPos = fieldName.find(".$");
             if ( opPos != string::npos ) {
-                _matcherType = MATCHER_FROM_QUERY;
+                // positional op found; add parent fields
+                uassert( 16234, "Cannot exclude array elements with the positional operator"
+                                " (currently unsupported).", e.trueValue() );
+                uassert( 16235, "Cannot specify more than one positional array projection per query"
+                                " (currently unsupported).", ! hasPositional );
+                hasPositional = true;
                 add( fieldName.substr( 0, opPos ) , e.trueValue() );
             }
         }
@@ -153,7 +143,30 @@ namespace mongo {
         }
     }
 
-    void Projection::transform( const BSONObj& in , BSONObjBuilder& b ) const {
+    void Projection::transform( const BSONObj& in , BSONObjBuilder& b, const MatchDetails* details ) const {
+        const ArrayOpType& arrayOpType = getArrayOpType();
+        typedef map<string, shared_ptr<Matcher> > Matchers;
+        Matchers matchers;
+
+        if ( arrayOpType == ARRAY_OP_ELEM_MATCH ) {
+            // $elemMatch projection operator(s) specified.  create new matcher(s).
+            BSONObjIterator specIt( getSpec() );
+            while ( specIt.more() ) {
+                BSONElement specElem = specIt.next();
+                BSONObjBuilder ob;
+                ob.append( specElem );
+                BSONObj fieldObj = ob.done();
+                log() << "checking for $elemMatch in specifier field: " << fieldObj << endl;
+                if ( specElem.type() == Object &&
+                     mongoutils::str::equals( specElem.Obj().firstElement().fieldName(),
+                                              "$elemMatch" ) ) {
+                    matchers.insert( make_pair( specElem.fieldName(),
+                                                new Matcher(fieldObj, true ) ) );
+                }
+            }
+            // log() << "Number of matchers: " << matchers.count() << endl;
+        }
+
         BSONObjIterator i(in);
         while ( i.more() ) {
             BSONElement e = i.next();
@@ -162,14 +175,46 @@ namespace mongo {
                     b.append( e );
             }
             else {
-                append( b , e );
+                if ( matchers.find( e.fieldName() ) == matchers.end() ) {
+                    // no array matchers for this field
+                    log() << "appending non $elemMatch field: " << e.fieldName() << endl;
+                    append( b, e, details, arrayOpType );
+                }
+            }
+        }
+
+        if ( arrayOpType == ARRAY_OP_ELEM_MATCH ) {
+            // $elemMatch projection operator(s) specified
+
+            for ( Matchers::const_iterator matcher = matchers.begin();
+                  matcher != matchers.end(); ++matcher ) {
+
+                MatchDetails arrayDetails;
+                arrayDetails.requestElemMatchKey();
+                log() << "checking $elemMatch match on: " << matcher->first  << endl;
+                if ( matcher->second->matches( in, &arrayDetails ) ) {
+                    log() << "Matched array on field: " << matcher->first  << endl
+                          << " from array: " << in.getField( matcher->first ) << endl
+                          << " in object: " << in << endl
+                          << " at position: " << arrayDetails.elemMatchKey() << endl;
+                    FieldMap::const_iterator field = _fields.find( matcher->first );
+                    if ( field != _fields.end() ) {
+                        log() << "    found " << matcher->first << " in field map. " << endl;
+                        BSONArrayBuilder a;
+                        BSONObjBuilder o;
+                        a.append( in.getField( matcher->first )
+                                    .Obj().getField( arrayDetails.elemMatchKey() ) );
+                        o.appendArray( matcher->first, a.arr() );
+                        field->second->append( b, o.done().firstElement(), details, arrayOpType );
+                    }
+                }
             }
         }
     }
 
-    BSONObj Projection::transform( const BSONObj& in ) const {
+    BSONObj Projection::transform( const BSONObj& in, const MatchDetails* details ) const {
         BSONObjBuilder b;
-        transform( in , b );
+        transform( in , b, details );
         return b.obj();
     }
 
@@ -220,7 +265,9 @@ namespace mongo {
         }
     }
 
-    void Projection::append( BSONObjBuilder& b , const BSONElement& e ) const {
+    void Projection::append( BSONObjBuilder& b , const BSONElement& e, const MatchDetails* details,
+                              const ArrayOpType arrayOpType ) const {
+
         FieldMap::const_iterator field = _fields.find( e.fieldName() );
         if (field == _fields.end()) {
             if (_include)
@@ -228,8 +275,7 @@ namespace mongo {
         }
         else {
             Projection& subfm = *field->second;
-
-            if ( ( subfm._fields.empty() && !subfm._special && _matcherType == MATCHER_NONE ) ||
+            if ( ( subfm._fields.empty() && !subfm._special && arrayOpType == ARRAY_OP_NORMAL) ||
                  !(e.type()==Object || e.type()==Array) ) {
                 // field map empty, or element is not an array/object
                 if (subfm._include)
@@ -239,67 +285,58 @@ namespace mongo {
                 BSONObjBuilder subb;
                 BSONObjIterator it(e.embeddedObject());
                 while (it.more()) {
-                    subfm.append(subb, it.next());
+                    subfm.append(subb, it.next(), details, arrayOpType);
                 }
                 b.append(e.fieldName(), subb.obj());
-
             }
             else { //Array
                 BSONObjBuilder matchedBuilder;
-
-                if ( _matcherType == MATCHER_FROM_QUERY ) {
+                if ( details && arrayOpType == ARRAY_OP_POSITIONAL ) {
+                    // LEFT OFF HERE: check if _this_ projection is positional.
                     // $ positional operator specified
-                    uassert(16233, mongoutils::str::stream() << "positional operator (" 
+                    uassert(16233, mongoutils::str::stream() << "positional operator ("
                                         << e.fieldName()
                                         << ".$) requires corresponding field in query specifier",
-                                   _matchDetails.get() != NULL && _matchDetails->hasElemMatchKey() );
+                                   details && details->hasElemMatchKey() );
 
                     // append as the first and only element in the projected array
-                    subfm.append( matchedBuilder, e.embeddedObject()[_matchDetails->elemMatchKey()]
-                                                  .wrap( "0" ).firstElement() );
-
-                } else if ( _matcherType != MATCHER_NONE ) {
-                    // $elemMatch operator specified
-                    unsigned arrayPos = 0;
-                    char arrayPosStr[10];
-                    BSONObjIterator it( e.embeddedObject() );
-                    while ( it.more() ) {
-                        // for each element in the array
-
-                        BSONElement elem( it.next() );
-
-                        if ( _matcherType == MATCHER_EXACT ) {
-                            log(5) << "checking $elemMatch exact criteria: " << _exactMatcher
-                                   << " array element: " << elem.toString() << endl;
-                            if ( _exactMatcher.valuesEqual( elem ) ) {
-                                // exact match.  reset array index and append element to subfield
-                                mongo_snprintf( arrayPosStr, 10, "%d", arrayPos++ );
-                                log(5) << "$elemMatch successful match: " << e.fieldName()
-                                       << " == "<< elem.wrap( arrayPosStr ).firstElement() << endl;
-                                subfm.append( matchedBuilder, elem.wrap( arrayPosStr ).firstElement() );
-                            }
-                        }
-                        else {
-                            // MATCHER_ELEM_MATCH ($elemMatch)
-                            log(5) << "checking $elemMatch matcher criteria: " << *_matcher->getQuery()
-                                   << " array element: " << elem.toString() << endl;
-                            if ( _matcher->matches( elem.Obj() ) ) {
-                                // matcher matched.  reset array index and append element to subfield
-                                mongo_snprintf( arrayPosStr, 10, "%d", arrayPos++ );
-                                log(5) << "$elemMatch matched " << e.fieldName() << ": "
-                                       << elem.wrap( arrayPosStr ).firstElement() << endl;
-                                subfm.append( matchedBuilder, elem.wrap( arrayPosStr ).firstElement() );
-                            }
-                        }
-                    }
-
-                } else {
-                    // no subarray matcher
-                    subfm.appendArray( matchedBuilder, e.embeddedObject() );
+                    subfm.append( matchedBuilder, e.embeddedObject()[details->elemMatchKey()]
+                                                  .wrap( "0" ).firstElement(),
+                                  details, arrayOpType );
+                }
+                else {
+                    // append exact array; no subarray matcher specified
+                    subfm.appendArray( matchedBuilder, e.embeddedObject(), details );
                 }
                 b.appendArray( e.fieldName(), matchedBuilder.obj() );
             }
         }
+    }
+
+    Projection::ArrayOpType Projection::getArrayOpType( ) const {
+        return getArrayOpType( getSpec() );
+    }
+
+    Projection::ArrayOpType Projection::getArrayOpType( const BSONObj spec ) const {
+        BSONObjIterator iq( spec );
+        while ( iq.more() ) {
+            // iterate through each element
+            const BSONElement& elem = iq.next();
+            const char* const& fieldName = elem.fieldName();
+            if ( mongoutils::str::contains( fieldName, ".$" ) ) {
+                // projection contains positional or $elemMatch operator
+                return ARRAY_OP_POSITIONAL;
+            }
+            if ( mongoutils::str::contains( fieldName, "$elemMatch" ) ) {
+                // projection contains positional or $elemMatch operator
+                return ARRAY_OP_ELEM_MATCH;
+            }
+
+            // check nested elements
+            if ( elem.type() == Object )
+                return getArrayOpType( elem.embeddedObject() );
+        }
+        return ARRAY_OP_NORMAL;
     }
 
     Projection::KeyOnly* Projection::checkKey( const BSONObj& keyPattern ) const {
@@ -357,10 +394,6 @@ namespace mongo {
             return p.release();
 
         return 0;
-    }
-
-    void Projection::setMatchDetails( shared_ptr<const MatchDetails> details ) { 
-        _matchDetails = details;
     }
 
     BSONObj Projection::KeyOnly::hydrate( const BSONObj& key ) const {

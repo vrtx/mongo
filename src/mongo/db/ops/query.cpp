@@ -140,9 +140,14 @@ namespace mongo {
                     break;
                 }
 
+                MatchDetails details;
+                if ( cc->fields && cc->fields->getArrayOpType() == Projection::ARRAY_OP_POSITIONAL ) {
+                    // field projection specified, and contains an array operator
+                    details.requestElemMatchKey();
+                }
+
                 // in some cases (clone collection) there won't be a matcher
-                shared_ptr <MatchDetails> details;
-                if ( !c->currentMatches( details.get() ) ) {
+                if ( !c->currentMatches( &details ) ) {
                 }
                 else if ( manager && ! manager->belongsToMe( cc ) ){
                     LOG(2) << "cursor skipping document in un-owned chunk: " << c->current() << endl;
@@ -155,7 +160,7 @@ namespace mongo {
                         last = c->currLoc();
                         n++;
 
-                        cc->fillQueryResultFromObj( b, details );
+                        cc->fillQueryResultFromObj( b, &details );
 
                         if ( ( ntoreturn && n >= ntoreturn ) || b.len() > MaxBytesToReturnToClientAtOnce ) {
                             c->advance();
@@ -319,7 +324,7 @@ namespace mongo {
     _bufferedMatches() {
     }
     
-    bool OrderedBuildStrategy::handleMatch( bool &orderedMatch ) {
+    bool OrderedBuildStrategy::handleMatch( bool &orderedMatch, MatchDetails& details ) {
         DiskLoc loc = _cursor->currLoc();
         if ( _cursor->getsetdup( loc ) ) {
             return orderedMatch = false;
@@ -331,7 +336,7 @@ namespace mongo {
         // Explain does not obey soft limits, so matches should not be buffered.
         if ( !_parsedQuery.isExplain() ) {
             fillQueryResultFromObj( _buf, _parsedQuery.getFields(),
-                                    current( true ), shared_ptr<const MatchDetails>(),
+                                    current( true ), &details,
                                    ( _parsedQuery.showDiskLoc() ? &loc : 0 ) );
             ++_bufferedMatches;
         }
@@ -347,7 +352,7 @@ namespace mongo {
     _bufferedMatches() {
     }
 
-    bool ReorderBuildStrategy::handleMatch( bool &orderedMatch ) {
+    bool ReorderBuildStrategy::handleMatch( bool &orderedMatch, MatchDetails& details ) {
         orderedMatch = false;
         if ( _cursor->getsetdup( _cursor->currLoc() ) ) {
             return false;
@@ -397,9 +402,9 @@ namespace mongo {
     _reorderedMatches() {
     }
     
-    bool HybridBuildStrategy::handleMatch( bool &orderedMatch ) {
+    bool HybridBuildStrategy::handleMatch( bool &orderedMatch, MatchDetails& details ) {
         if ( !_queryOptimizerCursor->currentPlanScanAndOrderRequired() ) {
-            return _orderedBuild.handleMatch( orderedMatch );
+            return _orderedBuild.handleMatch( orderedMatch, details );
         }
         orderedMatch = false;
         return handleReorderMatch();
@@ -462,14 +467,21 @@ namespace mongo {
     }
 
     bool QueryResponseBuilder::addMatch() {
-        if ( !currentMatches() ) {
+        MatchDetails details;
+
+        if ( _parsedQuery.getFields() && _parsedQuery.getFields()->getArrayOpType() == Projection::ARRAY_OP_POSITIONAL ) {
+            // field projection specified, and contains an array operator
+            details.requestElemMatchKey();
+        }
+
+        if ( !currentMatches( details ) ) {
             return false;
         }
         if ( !chunkMatches() ) {
             return false;
         }
         bool orderedMatch = false;
-        bool match = _builder->handleMatch( orderedMatch );
+        bool match = _builder->handleMatch( orderedMatch, details );
         _explain->noteIterate( match, orderedMatch, true, false );
         return match;
     }
@@ -566,15 +578,11 @@ namespace mongo {
         ( new HybridBuildStrategy( _parsedQuery, _queryOptimizerCursor, _buf ) );
     }
 
-    bool QueryResponseBuilder::currentMatches() {
-        shared_ptr<MatchDetails> details( new MatchDetails );
-        if ( _cursor->currentMatches( details.get() ) ) {
-            shared_ptr<Projection> proj = _parsedQuery.getFieldPtr();
-            if ( proj.get() )
-                proj->setMatchDetails( details );
+    bool QueryResponseBuilder::currentMatches( MatchDetails& details ) {
+        if ( _cursor->currentMatches( &details ) ) {
             return true;
         }
-        _explain->noteIterate( false, false, details->hasLoadedRecord(), false );
+        _explain->noteIterate( false, false, details.hasLoadedRecord(), false );
         return false;
     }
 
@@ -845,8 +853,41 @@ namespace mongo {
             }
         }
 
+        // sanity check positional op projections
+        if ( pq.getFields() && ! pq.getFields()->getSpec().isEmpty() ) {
+            BSONObjIterator fields( pq.getFields()->getSpec() );
+            bool found = false;
+            while ( fields.more() ) {
+                // for each projected field
+                string fieldName( fields.next().fieldName() );
+                size_t opPos = fieldName.find(".$");
+                if ( opPos == string::npos )
+                    // element is not positional
+                    continue;
+
+                std::set<std::string> queryFields;
+                query.getFieldNames( queryFields );
+                for ( std::set<std::string>::const_iterator i = queryFields.begin();
+                      i != queryFields.end(); ++i) {
+
+                     if ( *i == fieldName.substr( 0, opPos ) ||
+                          str::startsWith( *i, fieldName.substr( 0, opPos ).append(".") ) ) {
+                         // query field matches projection operator field
+                         found = true;
+                         break;
+                     }
+
+                }
+                if ( found )
+                    // positional op matched
+                    break;
+
+                // positional operator projection specified, but no matching query parameter
+                uassert( 16236, "Positional operator does not match the query specifier.", found );
+             }
+        }
         // Run a simple id query.
-        
+
         if ( ! (explain || pq.showDiskLoc()) && isSimpleIdQuery( query ) && !pq.hasOption( QueryOption_CursorTailable ) ) {
 
             int n = 0;

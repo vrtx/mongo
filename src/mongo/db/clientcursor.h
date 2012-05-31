@@ -286,10 +286,9 @@ namespace mongo {
          * NOTE: copied from BSONObj::extractFields
         */
         BSONObj extractFields(const BSONObj &pattern , bool fillWithNull = false) ;
-        
-        void fillQueryResultFromObj( BufBuilder &b, shared_ptr<const MatchDetails> details = 
-                                         shared_ptr<const MatchDetails>() ) const;
-        
+
+        void fillQueryResultFromObj( BufBuilder &b, const MatchDetails* details = NULL ) const;
+
         bool currentIsDup() { return _c->getsetdup( _c->currLoc() ); }
 
         bool currentMatches() {

@@ -422,7 +422,7 @@ namespace mongo {
         return b.obj();
     }
     
-    void ClientCursor::fillQueryResultFromObj( BufBuilder &b, shared_ptr<const MatchDetails> details ) const {
+    void ClientCursor::fillQueryResultFromObj( BufBuilder &b, const MatchDetails* details ) const {
         const Projection::KeyOnly *keyFieldsOnly = c()->keyFieldsOnly();
         if ( keyFieldsOnly ) {
             mongo::fillQueryResultFromObj( b, 0, keyFieldsOnly->hydrate( c()->currKey() ), details );

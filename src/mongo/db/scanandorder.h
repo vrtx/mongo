@@ -53,14 +53,11 @@ namespace mongo {
     */
 
     inline void fillQueryResultFromObj(BufBuilder& bb, Projection *filter, const BSONObj& js,
-                                       shared_ptr<const MatchDetails> details = 
-                                               shared_ptr<const MatchDetails>(), 
+                                       const MatchDetails* details = NULL,
                                        const DiskLoc* loc=NULL) {
         if ( filter ) {
             BSONObjBuilder b( bb );
-            if ( details.get() )
-                filter->setMatchDetails( details );
-            filter->transform( js , b );
+            filter->transform( js , b, details );
             if (loc)
                 b.append("$diskLoc", loc->toBSONObj());
             b.done();
