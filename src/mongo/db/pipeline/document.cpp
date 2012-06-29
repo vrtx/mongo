@@ -38,17 +38,20 @@ namespace mongo {
                        const DependencyTracker *pDependencies):
         vFieldName(),
         vpValue() {
+        const int nFields = pBsonObj->nFields();
+        vFieldName.reserve(nFields);
+        vpValue.reserve(nFields);
         BSONObjIterator bsonIterator(pBsonObj->begin());
         while(bsonIterator.more()) {
             BSONElement bsonElement(bsonIterator.next());
-            string fieldName(bsonElement.fieldName());
+            // string fieldName(bsonElement.fieldName());
 
             // LATER check pDependencies
             // LATER grovel through structures???
             intrusive_ptr<const Value> pValue(
                 Value::createFromBsonElement(&bsonElement));
 
-            vFieldName.push_back(fieldName);
+            vFieldName.push_back(bsonElement.fieldName());
             vpValue.push_back(pValue);
         }
     }
@@ -109,7 +112,7 @@ namespace mongo {
         return(intrusive_ptr<const Value>());
     }
 
-    void Document::addField(const string &fieldName,
+    void Document::addField(const char *fieldName,
                             const intrusive_ptr<const Value> &pValue) {
         uassert(15945, str::stream() << "cannot add undefined field " <<
                 fieldName << " to document", pValue->getType() != Undefined);
@@ -119,7 +122,7 @@ namespace mongo {
     }
 
     void Document::setField(size_t index,
-                            const string &fieldName,
+                            const char *fieldName,
                             const intrusive_ptr<const Value> &pValue) {
         /* special case:  should this field be removed? */
         if (!pValue.get()) {
@@ -192,7 +195,8 @@ namespace mongo {
             if (i >= rSize)
                 return 1; // right document is shorter
 
-            const int nameCmp = rL->vFieldName[i].compare(rR->vFieldName[i]);
+            // const int nameCmp = rL->vFieldName[i].compare(rR->vFieldName[i]);
+            const int nameCmp = strcmp(rL->vFieldName[i], rR->vFieldName[i]);
             if (nameCmp)
                 return nameCmp; // field names are unequal
 

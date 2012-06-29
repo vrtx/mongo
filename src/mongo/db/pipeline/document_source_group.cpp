@@ -358,7 +358,7 @@ namespace mongo {
         intrusive_ptr<Document> pResult(Document::create(1 + n));
 
         /* add the _id field */
-        pResult->addField(Document::idName, rIter->first);
+        pResult->addField(Document::idName.c_str(), rIter->first);
 
         /* add the rest of the fields */
         for(size_t i = 0; i < n; ++i) {

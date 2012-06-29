@@ -96,8 +96,13 @@ namespace mongo {
           It is an error to add a field that has the same name as another
           field.
         */
-        void addField(const string &fieldName,
+        void addField(const char *fieldName,
                       const intrusive_ptr<const Value> &pValue);
+
+        inline void addField(const string &fieldName,
+                             const intrusive_ptr<const Value> &pValue) {
+             addField(fieldName.c_str(), pValue);
+         }
 
         /*
           Set the given field to be at the specified position in the
@@ -113,8 +118,14 @@ namespace mongo {
           @param pValue the new Value
         */
         void setField(size_t index,
-                      const string &fieldName,
+                      const char *fieldName,
                       const intrusive_ptr<const Value> &pValue);
+
+        inline void setField(size_t index,
+                             const string &fieldName,
+                             const intrusive_ptr<const Value> &pValue) {
+            setField(index, fieldName.c_str(), pValue);
+         }
 
         /*
           Convenience type for dealing with fields.
@@ -193,8 +204,9 @@ namespace mongo {
         Document(BSONObj *pBsonObj, const DependencyTracker *pDependencies);
 
         /* these two vectors parallel each other */
-        vector<string> vFieldName;
+        vector<const char *> vFieldName;
         vector<intrusive_ptr<const Value> > vpValue;
+        // const BSONObj* _obj;
     };
 
 
