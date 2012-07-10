@@ -303,6 +303,16 @@ namespace mongo {
 
             _append( result , "conn" , 5 , b.getFieldDotted( "connections.current" ).numberInt() );
 
+            if (b["yielders"].type() == Object) {
+                BSONObj ax = a["yielders"].embeddedObject();
+                BSONObj bx = b["yielders"].embeddedObject();
+                BSONObjIterator i(bx);
+                while ( i.more() ) {
+                    BSONElement e = i.next();
+                    _append(result, e.fieldName(), 10, (int)diff( e.fieldName() , ax , bx ) );
+                }
+            }
+
             if ( b["repl"].type() == Object ) {
 
                 BSONObj x = b["repl"].embeddedObject();

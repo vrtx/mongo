@@ -458,7 +458,9 @@ namespace mongo {
                 {
                     BSONObjBuilder ttt( t.subobjStart( "currentQueue" ) );
                     int w=0, r=0;
-                    Client::recommendedYieldMicros( &w , &r );
+                    COUNTMICROS({
+                        Client::recommendedYieldMicros( &w , &r );
+                    });
                     ttt.append( "total" , w + r );
                     ttt.append( "readers" , r );
                     ttt.append( "writers" , w );
@@ -480,6 +482,12 @@ namespace mongo {
                 result.append( "globalLock" , t.obj() );
             }
             timeBuilder.appendNumber( "after basic" , Listener::getElapsedTimeMillis() - start );
+
+            {
+                BSONObjBuilder yieldBuilder;
+                TestCounters::global->appendStats(yieldBuilder);
+                result.append("yielders", yieldBuilder.obj());
+            }
 
             {
 

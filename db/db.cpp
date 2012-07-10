@@ -152,7 +152,11 @@ namespace mongo {
 
     /* if server is really busy, wait a bit */
     void beNice() {
-        sleepmicros( Client::recommendedYieldMicros() );
+        int yieldTime;
+        COUNTMICROS({
+            yieldTime = Client::recommendedYieldMicros();
+        });
+        sleepmicros( yieldTime );
     }
 
     class MyMessageHandler : public MessageHandler {

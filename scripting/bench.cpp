@@ -138,6 +138,11 @@ namespace mongo {
                 if ( op == "findOne" ) {
                     conn->findOne( ns , fixQuery( e["query"].Obj() ) );
                 }
+                else if ( op == "find" ) {
+                    auto_ptr<DBClientCursor> cursor = conn->query( ns , fixQuery( e["query"].Obj() ) );
+                    while (cursor->more())
+                        cursor->next();
+                }
                 else if ( op == "remove" ) {
                     conn->remove( ns , fixQuery( e["query"].Obj() ) );
                 }

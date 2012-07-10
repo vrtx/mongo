@@ -410,8 +410,10 @@ namespace mongo {
         int writers = 0;
         int readers = 0;
 
-        int micros = Client::recommendedYieldMicros( &writers , &readers );
-
+        int micros;
+        COUNTMICROS({
+            micros = Client::recommendedYieldMicros( &writers , &readers );
+        });
         if ( micros > 0 && writers == 0 && dbMutex.getState() <= 0 ) {
             // we have a read lock, and only reads are coming on, so why bother unlocking
             micros = 0;
@@ -481,8 +483,11 @@ namespace mongo {
             
             dbtempreleasecond unlock;
             if ( unlock.unlocked() ) {
-                if ( micros == -1 )
-                    micros = Client::recommendedYieldMicros();
+                if ( micros == -1 ) {
+                    COUNTMICROS({
+                        micros = Client::recommendedYieldMicros();
+                    });
+                }
                 if ( micros > 0 )
                     sleepmicros( micros );
             }

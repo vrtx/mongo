@@ -38,6 +38,43 @@
 
 namespace mongo {
 
+    // BB TESTING
+    TestCounters *TestCounters::global = new TestCounters();
+
+    TestCounters::TestCounters() :
+        _mutex("testcounters")
+    {
+    }
+
+    void TestCounters::calledFrom(const char *func, unsigned long long micros) {
+        {
+            mongo::mutex::scoped_lock l(_mutex);
+            CallMicrosMap::iterator it = callMap.find(func);
+            if (it == callMap.end())
+                callMap.insert(std::make_pair(func, micros));
+            else
+                it->second += micros;
+        }
+        // log() << "Function " << func << " has taken "
+        //       << micros << " calc time." << endl;
+    }
+
+    void TestCounters::appendStats(BSONObjBuilder &b) {
+        mongo::mutex::scoped_lock l(_mutex);
+        for (CallMicrosMap::const_iterator it = callMap.begin();
+             it != callMap.end();
+             ++it) {
+
+             log() << "Function " << it->first << " has taken "
+                   << it->second << "us to calculate yield time." << endl;
+             b.append(string(it->first), (long long)it->second);
+
+        }
+    }
+
+
+
+
     Client* Client::syncThread;
     mongo::mutex Client::clientsMutex("clientsMutex");
     set<Client*> Client::clients; // always be in clientsMutex when manipulating this

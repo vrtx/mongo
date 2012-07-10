@@ -29,8 +29,29 @@
 #include "namespace-inl.h"
 #include "lasterror.h"
 #include "stats/top.h"
+#include "../bson/util/atomic_int.h"
+
+#define COUNTMICROS(...) \
+{ \
+    Timer t; \
+    __VA_ARGS__; \
+    TestCounters::global->calledFrom(__FUNCTION__, t.micros()); \
+}
+
 
 namespace mongo {
+
+    class TestCounters {
+    public:
+        TestCounters();
+        typedef map <const char *, unsigned long long> CallMicrosMap;
+        void calledFrom(const char *func, unsigned long long micros);
+        void appendStats(BSONObjBuilder &b);
+        static TestCounters *global;
+    private:
+        CallMicrosMap callMap;
+        mongo::mutex _mutex;
+    };
 
     extern class ReplSet *theReplSet;
     class AuthenticationInfo;
