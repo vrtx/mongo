@@ -587,7 +587,6 @@ namespace mongo {
     } clientListPlugin;
 
     int Client::recommendedYieldMicros( int * writers , int * readers ) {
-        int num = 0;
         int w = 0;
         int r = 0;
         {
@@ -595,7 +594,6 @@ namespace mongo {
             for ( set<Client*>::iterator i=clients.begin(); i!=clients.end(); ++i ) {
                 Client* c = *i;
                 if ( c->curop()->isWaitingForLock() ) {
-                    num++;
                     if ( c->curop()->getLockType() > 0 )
                         w++;
                     else
@@ -603,7 +601,6 @@ namespace mongo {
                 }
             }
         }
-
         if ( writers )
             *writers = w;
         if ( readers )
@@ -611,7 +608,6 @@ namespace mongo {
 
         int time = r * 100;
         time += w * 500;
-
         time = min( time , 1000000 );
 
         // there has been a kill request for this op - we should yield to allow the op to stop
@@ -619,7 +615,6 @@ namespace mongo {
         if ( killCurrentOp.checkForInterruptNoAssert( false )[0] != '\0' ) {
             return 100;
         }
-
         return time;
     }
 

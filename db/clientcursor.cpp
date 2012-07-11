@@ -392,37 +392,47 @@ namespace mongo {
        need to call when you are ready to "unlock".
     */
     void ClientCursor::updateLocation() {
-        assert( _cursorid );
-        _idleAgeMillis = 0;
-        DiskLoc cl = _c->refLoc();
-        if ( lastLoc() == cl ) {
-            //log() << "info: lastloc==curloc " << ns << '\n';
-        }
-        else {
-            recursive_scoped_lock lock(ccmutex);
-            setLastLoc_inlock(cl);
-        }
-        // may be necessary for MultiCursor even when cl hasn't changed
-        _c->noteLocation();
+        COUNTMICROS({
+            assert( _cursorid );
+            _idleAgeMillis = 0;
+            DiskLoc cl = _c->refLoc();
+            if ( lastLoc() == cl ) {
+                //log() << "info: lastloc==curloc " << ns << '\n';
+            }
+            else {
+                recursive_scoped_lock lock(ccmutex);
+                setLastLoc_inlock(cl);
+            }
+            // may be necessary for MultiCursor even when cl hasn't changed
+            _c->noteLocation();
+        });
     }
 
     int ClientCursor::yieldSuggest() {
         int writers = 0;
         int readers = 0;
-
+        static int readerYieldCount = 0;
         int micros;
         COUNTMICROS({
             micros = Client::recommendedYieldMicros( &writers , &readers );
         });
-        if ( micros > 0 && writers == 0 && dbMutex.getState() <= 0 ) {
-            // we have a read lock, and only reads are coming on, so why bother unlocking
-            micros = 0;
+
+        if ( micros > 0 && dbMutex.getState() <= 0 ) {
+            // yield avoidance strategies:
+            // 1) we have a read lock, and only reads are coming on, so don't yield
+            // 2) there are many pending readers, and writer(s) exist, so only yield every 10 iterations
+            if (writers == 0 || (readers >= 100 && ++readerYieldCount % 10 != 1))
+                micros = 0;
         }
 
         return micros;
     }
     
     Record* ClientCursor::_recordForYield( ClientCursor::RecordNeeds need ) {
+        int retval = 0;
+        Record * rec = 0;
+COUNTMICROS({
+
         if ( need == DontNeed ) {
             return 0;
         }
@@ -441,11 +451,13 @@ namespace mongo {
         DiskLoc l = currLoc();
         if ( l.isNull() )
             return 0;
-        
-        Record * rec = l.rec();
+    
+        rec = l.rec();
         if ( rec->likelyInPhysicalMemory() ) 
+            retval = 1;
+});
+        if (retval)
             return 0;
-        
         return rec;
     }
 
@@ -453,24 +465,34 @@ namespace mongo {
         if ( yielded ) {
             *yielded = false;   
         }
-        if ( ! _yieldSometimesTracker.ping() ) {
-            Record* rec = _recordForYield( need );
-            if ( rec ) {
+
+        COUNTMICROS({
+
+            if ( ! _yieldSometimesTracker.ping() ) {
+                Record* rec = _recordForYield( need );
+                if ( rec ) {
+                    if ( yielded ) {
+                        *yielded = true;   
+                    }
+                    return yield( yieldSuggest() , rec );
+                }
+                return true;
+            }
+
+        });
+        
+        COUNTMICROS({
+
+            int micros = yieldSuggest();
+            if ( micros > 0 ) {
                 if ( yielded ) {
                     *yielded = true;   
                 }
-                return yield( yieldSuggest() , rec );
+                return yield( micros , _recordForYield( need ) );
             }
-            return true;
-        }
 
-        int micros = yieldSuggest();
-        if ( micros > 0 ) {
-            if ( yielded ) {
-                *yielded = true;   
-            }
-            return yield( micros , _recordForYield( need ) );
-        }
+        });
+
         return true;
     }
 
@@ -480,16 +502,16 @@ namespace mongo {
             auto_ptr<RWLockRecursive::Shared> lk;
             if ( rec )
                 lk.reset( new RWLockRecursive::Shared( MongoFile::mmmutex) );
-            
+            COUNTMICROS({
             dbtempreleasecond unlock;
             if ( unlock.unlocked() ) {
                 if ( micros == -1 ) {
-                    COUNTMICROS({
-                        micros = Client::recommendedYieldMicros();
-                    });
+                    micros = Client::recommendedYieldMicros();
                 }
-                if ( micros > 0 )
-                    sleepmicros( micros );
+                COUNTMICROS({
+                    if ( micros > 0)
+                        sleepmicros( micros );
+                });
             }
             else {
                 CurOp * c = cc().curop();
@@ -505,10 +527,12 @@ namespace mongo {
                 rec->touch();
 
             lk.reset(0); // need to release this before dbtempreleasecond
+            });
         }
     }
 
     bool ClientCursor::prepareToYield( YieldData &data ) {
+COUNTMICROS({
         if ( ! _c->supportYields() )
             return false;
         if ( ! _c->prepareToYield() ) {
@@ -543,18 +567,22 @@ namespace mongo {
                 }
             }
         }
+});
         return true;
     }
 
     bool ClientCursor::recoverFromYield( const YieldData &data ) {
-        ClientCursor *cc = ClientCursor::find( data._id , false );
-        if ( cc == 0 ) {
-            // id was deleted
-            return false;
-        }
+        COUNTMICROS({
+        
+            ClientCursor *cc = ClientCursor::find( data._id , false );
+            if ( cc == 0 ) {
+                // id was deleted
+                return false;
+            }
 
-        cc->_doingDeletes = data._doingDeletes;
-        cc->_c->recoverFromYield();
+            cc->_doingDeletes = data._doingDeletes;
+            cc->_c->recoverFromYield();
+        });
         return true;
     }
 
@@ -563,10 +591,11 @@ namespace mongo {
             return true;
 
         YieldData data;
-        prepareToYield( data );
 
-        staticYield( micros , _ns , recordToLoad );
-
+        COUNTMICROS({
+            prepareToYield( data );
+            staticYield( micros , _ns , recordToLoad );
+        });
         return ClientCursor::recoverFromYield( data );
     }
 

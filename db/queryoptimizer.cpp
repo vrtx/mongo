@@ -665,11 +665,13 @@ doneCheckOrder:
         if ( micros <= 0 ) 
             return;
         
+COUNTMICROS({
         if ( !prepareToYield() ) 
             return;   
         
         ClientCursor::staticYield( micros , _plans._ns , 0 );
         recoverFromYield();
+});
     }
 
     shared_ptr<QueryOp> QueryPlanSet::Runner::init() {
