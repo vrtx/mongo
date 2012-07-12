@@ -606,8 +606,8 @@ namespace mongo {
         if ( readers )
             *readers = r;
 
-        int time = r * 100;
-        time += w * 500;
+        int time = r * 10;
+        time += w;
         time = min( time , 1000000 );
 
         // there has been a kill request for this op - we should yield to allow the op to stop

@@ -474,7 +474,9 @@ COUNTMICROS({
                     if ( yielded ) {
                         *yielded = true;   
                     }
-                    return yield( yieldSuggest() , rec );
+                    bool res = yield( yieldSuggest() , rec );
+                    _yieldSometimesTracker.resetLastTime();
+                    return res;
                 }
                 return true;
             }
@@ -488,7 +490,9 @@ COUNTMICROS({
                 if ( yielded ) {
                     *yielded = true;   
                 }
-                return yield( micros , _recordForYield( need ) );
+                bool res = yield( micros , _recordForYield( need ) );
+                _yieldSometimesTracker.resetLastTime();
+                return res;
             }
 
         });
@@ -497,21 +501,19 @@ COUNTMICROS({
     }
 
     void ClientCursor::staticYield( int micros , const StringData& ns , Record * rec ) {
+        bool haveReadLock = dbMutex.getState() <= 0;
         killCurrentOp.checkForInterrupt( false );
         {
             auto_ptr<RWLockRecursive::Shared> lk;
             if ( rec )
                 lk.reset( new RWLockRecursive::Shared( MongoFile::mmmutex) );
-            COUNTMICROS({
+COUNTMICROS({
             dbtempreleasecond unlock;
-            if ( unlock.unlocked() ) {
-                if ( micros == -1 ) {
+            if (unlock.unlocked() && !haveReadLock) {
+                if ( micros == -1 )
                     micros = Client::recommendedYieldMicros();
-                }
-                COUNTMICROS({
-                    if ( micros > 0)
-                        sleepmicros( micros );
-                });
+                if ( micros > 0)
+                    sleepmicros( micros );
             }
             else {
                 CurOp * c = cc().curop();
@@ -527,7 +529,7 @@ COUNTMICROS({
                 rec->touch();
 
             lk.reset(0); // need to release this before dbtempreleasecond
-            });
+});
         }
     }
 
