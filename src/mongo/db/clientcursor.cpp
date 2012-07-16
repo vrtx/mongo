@@ -304,7 +304,9 @@ namespace mongo {
         _c(c), _pos(0),
         _query(query),  _queryOptions(queryOptions),
         _idleAgeMillis(0), _pinValue(0),
-        _doingDeletes(false), _yieldSometimesTracker(128,10) {
+        _doingDeletes(false), _yieldSometimesTracker(128,10),
+        _lastYieldTime(curTimeMicros64())
+        {
 
         Lock::assertAtLeastReadLocked(ns);
 
@@ -502,17 +504,24 @@ namespace mongo {
 
     bool ClientCursor::yieldSometimes( RecordNeeds need, bool *yielded ) {
         if ( yielded ) {
-            *yielded = false;   
+            *yielded = false;
         }
+
+        Record* rec = _recordForYield( need );
+        if (curTimeMicros64() - _lastYieldTime < 500 && rec == NULL ) {
+            // only yield after at least 500us of lock time, unless we detect a page fault
+            return true;
+        }
+
         if ( ! _yieldSometimesTracker.intervalHasElapsed() ) {
-            Record* rec = _recordForYield( need );
             if ( rec ) {
                 // yield for page fault
                 if ( yielded ) {
-                    *yielded = true;   
+                    *yielded = true;
                 }
                 bool res = yield( suggestYieldMicros() , rec );
                 _yieldSometimesTracker.resetLastTime();
+                _lastYieldTime = curTimeMicros64();
                 return res;
             }
             return true;
@@ -521,10 +530,11 @@ namespace mongo {
         int micros = suggestYieldMicros();
         if ( micros > 0 ) {
             if ( yielded ) {
-                *yielded = true;   
+                *yielded = true;
             }
             bool res = yield( micros , _recordForYield( need ) );
             _yieldSometimesTracker.resetLastTime();
+            _lastYieldTime = curTimeMicros64();
             return res;
         }
         return true;

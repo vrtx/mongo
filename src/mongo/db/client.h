@@ -58,8 +58,9 @@ namespace mongo {
         static Client *syncThread;
     public:
         // always be in clientsMutex when manipulating this. killop stuff uses these.
-        static set<Client*>& clients;
-        static mongo::mutex& clientsMutex;
+        static AtomicUInt clientsCount;         // essentially clients.count()
+        static set<Client*>& clients;           // protected by clientsMutex
+        static mongo::mutex& clientsMutex;      // protects clients, clientsCount
         static int getActiveClientCount( int& writers , int& readers );
         class Context;
         ~Client();

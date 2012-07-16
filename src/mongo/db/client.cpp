@@ -41,8 +41,8 @@ namespace mongo {
   
     Client* Client::syncThread;
     mongo::mutex& Client::clientsMutex = *(new mutex("clientsMutex"));
-    set<Client*>& Client::clients = *(new set<Client*>); // always be in clientsMutex when manipulating this
-
+    set<Client*>& Client::clients = *(new set<Client*>);    // always be in clientsMutex when manipulating this
+    AtomicUInt Client::clientsCount = 0;
     TSP_DEFINE(Client, currentClient)
 
 #if defined(_DEBUG)
@@ -140,6 +140,7 @@ namespace mongo {
         temp << hex << showbase << pthread_self();
         _threadId = temp.str();
 #endif
+        ++clientsCount;
         scoped_lock bl(clientsMutex);
         clients.insert(this);
     }
@@ -156,9 +157,11 @@ namespace mongo {
 
         if ( ! inShutdown() ) {
             // we can't clean up safely once we're in shutdown
-            scoped_lock bl(clientsMutex);
-            if ( ! _shutdown )
+            --clientsCount;
+            if ( ! _shutdown ) {
+                scoped_lock bl(clientsMutex);
                 clients.erase(this);
+            }
             delete _curOp;
         }
     }
@@ -175,6 +178,7 @@ namespace mongo {
         if ( inShutdown() )
             return false;
         {
+            --clientsCount;
             scoped_lock bl(clientsMutex);
             clients.erase(this);
             if ( isSyncThread() ) {
@@ -524,21 +528,28 @@ namespace mongo {
     } clientListPlugin;
 
     int Client::recommendedYieldMicros( int * writers , int * readers ) {
-        int num = 0;
-        int w = 0;
-        int r = 0;
+        static int w = 0;
+        static int r = 0;
+        static unsigned callCount = 0;
         {
-            scoped_lock bl(clientsMutex);
-            for ( set<Client*>::iterator i=clients.begin(); i!=clients.end(); ++i ) {
-                Client* c = *i;
-                if ( c->lockState().hasLockPending() ) {
-                    num++;
-                    if ( c->lockState().hasAnyWriteLock() )
-                        w++;
-                    else
-                        r++;
+            ++callCount;
+            if (clientsCount < 128 ||
+                callCount % ( (clientsCount.get() >> 7) * 50 + 1) == 0) {
+                // if there are more than 128 clients, only collect op stats
+                // roughly once every (clientsCount/128) * 50 calls.
+                scoped_lock bl(clientsMutex);
+                w = r = 0;
+                for ( set<Client*>::iterator i=clients.begin(); i!=clients.end(); ++i ) {
+                    Client* c = *i;
+                    if ( c->lockState().hasLockPending() ) {
+                        if ( c->lockState().hasAnyWriteLock() )
+                            w++;
+                        else
+                            r++;
+                    }
                 }
             }
+            if (callCount > (2U<<30)) callCount = 0;    // reset count to avoid overflow
         }
 
         if ( writers )

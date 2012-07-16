@@ -413,7 +413,7 @@ namespace mongo {
 
         bool _doingDeletes; // when true we are the delete and aboutToDelete shouldn't manipulate us
         ElapsedTracker _yieldSometimesTracker;
-
+        unsigned long long _lastYieldTime;
         ShardChunkManagerPtr _chunkManager;
 
     public:
