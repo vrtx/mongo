@@ -34,6 +34,72 @@ using namespace std;
 
 namespace mongo {
 
+    PageTable* PageTable::instance = new PageTable;
+
+    PageTable::PageTable(pid_t pid) {
+        // upper and lower boind
+        _pageFlags.insert(make_pair(reinterpret_cast <const void *>(0), 
+                                    0xA000000000000000)); // lower bound is in mem
+        _pageFlags.insert(make_pair(reinterpret_cast <const void *>(0xFFFFFFFFFFFFFFFF), 
+                                    0xA000000000000000)); // upper bound in mem
+        sprintf(_fileName, "/proc/%d/pagemap", pid );
+    }
+
+    PageTable::~PageTable() {
+        
+    }
+
+    void PageTable::updateRange(const void* start, const void* end) {
+        int fd = open(_fileName, O_RDWR);
+        if (fd < 0) {
+            stringstream ss;
+            ss << "couldn't open [" << _fileName << "] to get pagemaps: " << errnoWithDescription();
+            string s = ss.str();
+            msgassertedNoTrace( 0 , s.c_str() );
+        }
+        const int32_t& pageSize = sysconf(_SC_PAGESIZE);
+        const uint64_t& endPage = reinterpret_cast <uint64_t>(end);
+        const uint64_t& startPage = reinterpret_cast <uint64_t>(start);
+
+        uint64_t pageIter = startPage - (startPage % pageSize);
+        for (; pageIter <= endPage; pageIter += pageSize) {
+            // for each page
+            unsigned long long pageFlags;
+            int scanRes;
+            if (lseek64(fd, pageIter, SEEK_SET) == -1) {
+                log() << "error seeking to " << hex << pageIter << dec << ": " << errnoWithDescription() << endl;
+            }
+            if ((scanRes = read(fd, &pageFlags, sizeof(unsigned long long)) < 0)) {
+                log() << "didn't find a match for " << hex << pageIter << dec << ".  fscanf ret: " << scanRes << " " << errnoWithDescription() << endl;
+                continue;
+            }
+            _pageFlags.insert(make_pair(reinterpret_cast <const void *>(pageIter), pageFlags));
+        }
+        close(fd);
+    }
+
+    bool PageTable::isVAPresent(const void* addr) {
+        PageFlagMap::const_iterator it = _pageFlags.lower_bound(addr);
+        uint64_t addrOff = reinterpret_cast<uint64_t>(addr);
+        if (addrOff - reinterpret_cast <uint64_t>(it->first) < 64 * 1024) {
+            // mapped addr is within 64k of requested addr
+            if (it->second & (1ULL << 63)) {
+                // test page present bit
+                return true;
+            } else {
+                return false;
+            }
+        } else {
+            // unkown addr
+            // TODO: make this better.
+            log() << "no nearby addr for " << hex << addr << ".  next lowest: " << it->first << dec << endl;
+            updateRange(addr, addr);
+        }
+        return false;
+    }
+
+
+
     class LinuxProc {
     public:
         LinuxProc( pid_t pid = getpid() ) {

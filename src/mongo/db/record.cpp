@@ -236,63 +236,65 @@ namespace mongo {
     }
 
     bool Record::likelyInPhysicalMemory( const char* data ) {
-        DEV {
-            // we don't want to do this too often as it makes DEBUG builds very slow
-            // at some point we might want to pass in what type of Record this is and
-            // then we can use that to make a more intelligent decision
-            int mod;
-            if ( Lock::isReadLocked() ) {
-                // we'll check read locks less often
-                // since its a lower probability of error
-                mod = 1000;
-            }
-            else if ( Lock::isLocked() ) {
-                // write lock's can more obviously cause issues
-                // check more often than reads
-                mod = 100;
-            }
-            else {
-                // no lock???
-                // if we get here we should be very paranoid
-                mod = 50;
-            }
-            
-            if ( rand() % mod == 0 ) 
-                return false;
-        } // end DEV test code
-
-        if ( ! MemoryTrackingEnabled )
-            return true;
-
-        const size_t page = (size_t)data >> 12;
-        const size_t region = page >> 6;
-        const size_t offset = page & 0x3f;
-
-        if ( ps::rolling[ps::bigHash(region)].access( region , offset , false ) ) {
-#ifdef _DEBUG
-            if ( blockSupported && ! ProcessInfo::blockInMemory( const_cast<char*>(data) ) ) {
-                warning() << "we think data is in ram but system says no"  << endl;
-            }
-#endif
-            return true;
-        }
-
-        if ( ! blockSupported ) {
-            // this means we don't fallback to system call 
-            // and assume things aren't in memory
-            // possible we yield too much - but better than not yielding through a fault
-            return false;
-        }
-
-        return ProcessInfo::blockInMemory( const_cast<char*>(data) );
+        return PageTable::instance->isVAPresent(data);
+//         DEV {
+//             // we don't want to do this too often as it makes DEBUG builds very slow
+//             // at some point we might want to pass in what type of Record this is and
+//             // then we can use that to make a more intelligent decision
+//             int mod;
+//             if ( Lock::isReadLocked() ) {
+//                 // we'll check read locks less often
+//                 // since its a lower probability of error
+//                 mod = 1000;
+//             }
+//             else if ( Lock::isLocked() ) {
+//                 // write lock's can more obviously cause issues
+//                 // check more often than reads
+//                 mod = 100;
+//             }
+//             else {
+//                 // no lock???
+//                 // if we get here we should be very paranoid
+//                 mod = 50;
+//             }
+//             
+//             if ( rand() % mod == 0 ) 
+//                 return false;
+//         } // end DEV test code
+// 
+//         if ( ! MemoryTrackingEnabled )
+//             return true;
+// 
+//         const size_t page = (size_t)data >> 12;
+//         const size_t region = page >> 6;
+//         const size_t offset = page & 0x3f;
+// 
+//         if ( ps::rolling[ps::bigHash(region)].access( region , offset , false ) ) {
+// #ifdef _DEBUG
+//             if ( blockSupported && ! ProcessInfo::blockInMemory( const_cast<char*>(data) ) ) {
+//                 warning() << "we think data is in ram but system says no"  << endl;
+//             }
+// #endif
+//             return true;
+//         }
+// 
+//         if ( ! blockSupported ) {
+//             // this means we don't fallback to system call 
+//             // and assume things aren't in memory
+//             // possible we yield too much - but better than not yielding through a fault
+//             return false;
+//         }
+// 
+//         return ProcessInfo::blockInMemory( const_cast<char*>(data) );
     }
 
 
     Record* Record::accessed() {
-        const size_t page = (size_t)_data >> 12;
-        const size_t region = page >> 6;
-        const size_t offset = page & 0x3f;        
-        ps::rolling[ps::bigHash(region)].access( region , offset , true );
+        // const size_t page = (size_t)_data >> 12;
+        // const size_t region = page >> 6;
+        // const size_t offset = page & 0x3f;
+        // ps::rolling[ps::bigHash(region)].access( region , offset , true );
+        PageTable::instance->updateRange(this, this);
         return this;
     }
     

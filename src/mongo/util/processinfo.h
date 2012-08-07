@@ -31,6 +31,19 @@ int getpid();
 
 namespace mongo {
 
+    class PageTable {
+    public:
+        PageTable(pid_t pid = getpid());
+        ~PageTable();
+        void updateRange(const void* start, const void* end);
+        bool isVAPresent(const void* addr);
+        static PageTable* instance;
+    private:
+        typedef std::map <const void*, uint64_t> PageFlagMap;
+        PageFlagMap _pageFlags;
+        char _fileName[128];
+    };
+
     class ProcessInfo {
     public:
         ProcessInfo( pid_t pid = getpid() );
