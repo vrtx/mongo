@@ -482,7 +482,7 @@ int main(int argc, char* argv[]) {
     catch(...) {
         cout << "uncaught unknown exception in mongos main" << endl;
     }
-    ::_exit(20);
+    ::exit(20);
 }
 
 #undef exit
@@ -504,5 +504,5 @@ void mongo::dbexit( ExitCode rc, const char *why ) {
           << " rc:" << rc
           << " " << ( why ? why : "" )
           << endl;
-    ::_exit(rc);
+    ::exit(rc);
 }

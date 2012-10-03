@@ -622,7 +622,7 @@ static int mongoDbMain(int argc, char* argv[]);
 
 int main(int argc, char* argv[]) {
     int exitCode = mongoDbMain(argc, argv);
-    ::_exit(exitCode);
+    ::exit(exitCode);
 }
 
 static int mongoDbMain(int argc, char* argv[]) {
@@ -1021,7 +1021,7 @@ static int mongoDbMain(int argc, char* argv[]) {
             dur::DataLimitPerJournalFile = 128 * 1024 * 1024;
             if (cmdLine.usingReplSets() || replSettings.master || replSettings.slave) {
                 log() << "replication should not be enabled on a config server" << endl;
-                ::_exit(-1);
+                ::exit(-1);
             }
             if ( params.count( "nodur" ) == 0 && params.count( "nojournal" ) == 0 )
                 cmdLine.dur = true;
@@ -1120,7 +1120,7 @@ static int mongoDbMain(int argc, char* argv[]) {
                 sleepsecs(1);
             }
 
-            ::_exit(0);
+            ::exit(0);
         }
 #endif
 
@@ -1183,7 +1183,7 @@ namespace mongo {
         rawOut( oss.str() );
 
         // Don't go through normal shutdown procedure. It may make things worse.
-        ::_exit(EXIT_ABRUPT);
+        ::exit(EXIT_ABRUPT);
 
     }
 
@@ -1224,7 +1224,7 @@ namespace mongo {
     void my_new_handler() {
         rawOut( "out of memory, printing stack and exiting:" );
         printStackTrace();
-        ::_exit(EXIT_ABRUPT);
+        ::exit(EXIT_ABRUPT);
     }
 
     void setupSignals_ignoreHelper( int signal ) {}

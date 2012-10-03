@@ -1040,13 +1040,13 @@ namespace mongo {
             if ( numExitCalls++ > 0 ) {
                 if ( numExitCalls > 5 ) {
                     // this means something horrible has happened
-                    ::_exit( rc );
+                    ::exit( rc );
                 }
                 stringstream ss;
                 ss << "dbexit: " << why << "; exiting immediately";
                 tryToOutputFatal( ss.str() );
                 if ( c ) c->shutdown();
-                ::_exit( rc );
+                ::exit( rc );
             }
         }
 
@@ -1085,7 +1085,7 @@ namespace mongo {
 #endif
         tryToOutputFatal( "dbexit: really exiting now" );
         if ( c ) c->shutdown();
-        ::_exit(rc);
+        ::exit(rc);
     }
 
 #if !defined(__sunos__)
