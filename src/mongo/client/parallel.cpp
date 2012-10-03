@@ -1049,7 +1049,7 @@ namespace mongo {
             const Shard& shard = i->first;
             PCMData& mdata = i->second;
 
-            {} << "finishing on shard " << shard << ", current connection state is " << mdata.toBSON() << endl;
+            //LOG() << "finishing on shard " << shard << ", current connection state is " << mdata.toBSON() << endl;
 
             // Ignore empty conns for now
             if( ! mdata.pcState ) continue;
