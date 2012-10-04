@@ -51,6 +51,7 @@
 #include "../server.h"
 #include "mongo/db/index_update.h"
 #include "mongo/db/repl/bgsync.h"
+#include "mongo/db/RadixTree.h"
 
 namespace mongo {
 
@@ -959,6 +960,12 @@ namespace mongo {
                 BSONObj o = *i;
                 log(1) << "reIndex ns: " << toDeleteNs << " index: " << o << endl;
                 theDataFileMgr.insertWithObjMod( Namespace( toDeleteNs.c_str() ).getSisterNS( "system.indexes" ).c_str() , o , true );
+
+
+                const char * ns = Namespace( toDeleteNs.c_str() ).getSisterNS( "system.indexes" ).c_str();
+                Lock::DBWrite l(ns);
+                Client::Context context(ns);
+                RadixKeyArena::test(ns);
             }
 
             result.append( "nIndexes" , (int)all.size() );
