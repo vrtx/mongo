@@ -128,9 +128,9 @@ namespace mongo {
                 throw RecvStaleConfigException( _ns , "ClusteredCursor::query" , ShardChunkVersion( 0, OID() ), ShardChunkVersion( 0, OID() ), true );
             }
             
-            LOG(5) << "ClusteredCursor::query (" << type() << ") server:" << server
-                   << " ns:" << _ns << " query:" << q << " num:" << num
-                   << " _fields:" << _fields << " options: " << _options << endl;
+            // LOG(5) << "ClusteredCursor::query (" << type() << ") server:" << server
+            //        << " ns:" << _ns << " query:" << q << " num:" << num
+            //        << " _fields:" << _fields << " options: " << _options << endl;
         
             auto_ptr<DBClientCursor> cursor =
                 conn->query( _ns , q , num , 0 , ( _fields.isEmpty() ? 0 : &_fields ) , _options , _batchSize == 0 ? 0 : _batchSize + skipLeft );
@@ -737,8 +737,8 @@ namespace mongo {
                     // It's actually okay if we set the version here, since either the
                     // manager will be verified as compatible, or if the manager doesn't
                     // exist, we don't care about version consistency
-                    log( pc ) << "needed to set remote version on connection to value "
-                              << "compatible with " << vinfo << endl;
+                    // log( pc ) << "needed to set remote version on connection to value "
+                    //           << "compatible with " << vinfo << endl;
                 }
             } catch ( const DBException& dbEx ) {
                 if ( (dbEx.getCode() == 10009 /* no master */ &&
@@ -826,7 +826,7 @@ namespace mongo {
             const Shard& shard = *i;
             PCMData& mdata = _cursorMap[ shard ];
 
-            log( pc ) << "initializing on shard " << shard << ", current connection state is " << mdata.toBSON() << endl;
+            // log( pc ) << "initializing on shard " << shard << ", current connection state is " << mdata.toBSON() << endl;
 
             // This may be the first time connecting to this shard, if so we can get an error here
             try {
@@ -966,8 +966,8 @@ namespace mongo {
                 bool forceReload, fullReload;
                 _markStaleNS( staleNS, e, forceReload, fullReload );
 
-                int logLevel = fullReload ? 0 : 1;
-                log( pc + logLevel ) << "stale config of ns " << staleNS << " during initialization, will retry with forced : " << forceReload << ", full : " << fullReload << causedBy( e ) << endl;
+                // int logLevel = fullReload ? 0 : 1;
+                // log( pc + logLevel ) << "stale config of ns " << staleNS << " during initialization, will retry with forced : " << forceReload << ", full : " << fullReload << causedBy( e ) << endl;
 
                 // This is somewhat strange
                 if( staleNS != ns )
@@ -1042,7 +1042,7 @@ namespace mongo {
         bool retry = false;
         map< string, StaleConfigException > staleNSExceptions;
 
-        log( pc ) << "finishing over " << _cursorMap.size() << " shards" << endl;
+        // log( pc ) << "finishing over " << _cursorMap.size() << " shards" << endl;
 
         for( map< Shard, PCMData >::iterator i = _cursorMap.begin(), end = _cursorMap.end(); i != end; ++i ){
 
@@ -1157,8 +1157,8 @@ namespace mongo {
                     bool forceReload, fullReload;
                     _markStaleNS( staleNS, exception, forceReload, fullReload );
 
-                    int logLevel = fullReload ? 0 : 1;
-                    log( pc + logLevel ) << "stale config of ns " << staleNS << " on finishing query, will retry with forced : " << forceReload << ", full : " << fullReload << causedBy( exception ) << endl;
+                    // int logLevel = fullReload ? 0 : 1;
+                    // log( pc + logLevel ) << "stale config of ns " << staleNS << " on finishing query, will retry with forced : " << forceReload << ", full : " << fullReload << causedBy( exception ) << endl;
 
                     // This is somewhat strange
                     if( staleNS != ns )
@@ -1183,7 +1183,7 @@ namespace mongo {
 
             // Erase empty stuff
             if( ! mdata.pcState ){
-                log() << "PCursor erasing empty state " << mdata.toBSON() << endl;
+                // log() << "PCursor erasing empty state " << mdata.toBSON() << endl;
                 _cursorMap.erase( i++ );
                 continue;
             }
@@ -1301,13 +1301,13 @@ namespace mongo {
 
             bool firstPass = retryQueries.size() == 0;
 
-            if( ! firstPass ){
-                log() << "retrying " << ( returnPartial ? "(partial) " : "" ) << "parallel connection to ";
-                for( set<int>::iterator it = retryQueries.begin(); it != retryQueries.end(); ++it ){
-                    log() << queries[*it]._server << ", ";
-                }
-                log() << finishedQueries << " finished queries." << endl;
-            }
+            // if( ! firstPass ){
+            //     log() << "retrying " << ( returnPartial ? "(partial) " : "" ) << "parallel connection to ";
+            //     for( set<int>::iterator it = retryQueries.begin(); it != retryQueries.end(); ++it ){
+            //         log() << queries[*it]._server << ", ";
+            //     }
+            //     log() << finishedQueries << " finished queries." << endl;
+            // }
 
             size_t num = 0;
             for ( vector<ServerAndQuery>::iterator it = queries.begin(); it != queries.end(); ++it ) {
@@ -1353,8 +1353,8 @@ namespace mongo {
                     break;
                 }
 
-                LOG(5) << "ParallelSortClusteredCursor::init server:" << sq._server << " ns:" << _ns
-                       << " query:" << q << " _fields:" << _fields << " options: " << _options  << endl;
+                // LOG(5) << "ParallelSortClusteredCursor::init server:" << sq._server << " ns:" << _ns
+                //        << " query:" << q << " _fields:" << _fields << " options: " << _options  << endl;
 
                 if( ! _cursors[i].raw() )
                     _cursors[i].reset( new DBClientCursor( conns[i]->get() , _ns , q ,
@@ -1511,8 +1511,8 @@ namespace mongo {
                 warning() << errMsg.str() << endl;
         }
 
-        if( retries > 0 )
-            log() <<  "successfully finished parallel query after " << retries << " retries" << endl;
+        // if( retries > 0 )
+        //     log() <<  "successfully finished parallel query after " << retries << " retries" << endl;
 
     }
 
@@ -1698,7 +1698,7 @@ namespace mongo {
                     versionManager.checkShardVersionCB( _conn, staleNS, false, 1 );
                 }
 
-                LOG( i > 1 ? 0 : 1 ) << "retrying lazy command" << causedBy( e ) << endl;
+                // LOG( i > 1 ? 0 : 1 ) << "retrying lazy command" << causedBy( e ) << endl;
 
                 verify( _conn->lazySupported() );
                 _done = false;
