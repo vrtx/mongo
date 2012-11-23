@@ -27,6 +27,7 @@
 #include "mongo/db/kill_current_op.h"
 #include "mongo/db/pdfile.h"
 #include "mongo/db/repl.h"
+#include "mongo/db/sort_phase_one.h"
 
 namespace mongo {
 
@@ -162,6 +163,7 @@ namespace mongo {
 
                 try {
                     theDataFileMgr.insertWithObjMod(to_collection, js);
+//                    sortedKeys[nidx].addKeys(...);
                     if ( logForRepl )
                         logOp("i", to_collection, js);
 
@@ -184,6 +186,7 @@ namespace mongo {
         const char *to_collection;
         time_t saveLast;
         list<BSONObj> *storedForLater;
+        scoped_array<SortPhaseOne> &_sortedKeys;
         bool logForRepl;
         Client::Context *context;
         bool _mayYield;
@@ -280,6 +283,7 @@ namespace mongo {
     }
 
     extern bool inDBRepair;
+    extern SortPhaseOne *precalced;
     void ensureIdIndexForNewNs(const char *ns);
 
     bool Cloner::go(const char *masterHost, string& errmsg, const string& fromdb, bool logForRepl, bool slaveOk, bool useReplAuth, bool snapshot, bool mayYield, bool mayBeInterrupted, int *errCode) {

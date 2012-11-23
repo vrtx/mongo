@@ -20,7 +20,7 @@
 
 #include "pch.h"
 
-#include "mongo/db/compact.h"
+#include "mongo/db/sort_phase_one.h"
 
 #include "mongo/db/background.h"
 #include "mongo/db/commands.h"
