@@ -36,7 +36,7 @@ _ disallow system* manipulations from the database.
 #include "mongo/db/background.h"
 #include "mongo/db/btree.h"
 #include "mongo/db/commands/server_status.h"
-#include "mongo/db/compact.h"
+#include "mongo/db/sort_phase_one.h"
 #include "mongo/db/curop-inl.h"
 #include "mongo/db/db.h"
 #include "mongo/db/dbhelpers.h"

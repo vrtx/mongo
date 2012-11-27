@@ -22,7 +22,7 @@
 #include "mongo/db/background.h"
 #include "mongo/db/btreebuilder.h"
 #include "mongo/db/clientcursor.h"
-#include "mongo/db/compact.h"
+#include "mongo/db/sort_phase_one.h"
 #include "mongo/db/extsort.h"
 #include "mongo/db/index.h"
 #include "mongo/db/kill_current_op.h"
