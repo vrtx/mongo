@@ -1,0 +1,178 @@
+Overview
+========
+This proposal outlines a generic, type-safe system for binding C++ classes, objects, functions and variables to an interpreter.  The target interpreter in this case is V8, although other interpreters (and even other languages like Lua and Python) can be added by simply implementing a set of TypeConverters.
+
+Interpreter's Perspective
+-------------------------
+The interpeter will utilize this system for the following tasks:
+
+1. Instantiate an object from a native class:
+
+		var mbson = new Document();
+
+2. Call a native free function, returning a basic type or native object:
+
+		var histogram = benchRun(...);	// return a Histogram object
+		var i = getProcessUptime();		// return a JS Number
+
+3. Call a native class (static) function:
+
+		var i = ProcessInfo.pagesInMemory(...);
+
+4. Call a native member function (and return native objects)
+
+		var elem = mbson.root().rightChild();
+		elem.addChild(new Element(...));
+
+Ownership Semantics
+-------------------
+When an object is created, it will eventually need to be freed.  This can happen in one of three ways:
+
+1. Standard garbage collection
+2. Reference counted (decremented by GC)
+3. Native resource management
+
+Standard garbage collection will be most commonly used when an object is constructed in the interpreter (e.g. using 'new').  Native management and reference counting are useful for factories and resources that are shared across interpreters.  The ownership semantics of an object may change during it's lifespan.
+
+A few cases to consider:
+
+		var doc = new Document();
+		doc = "";			            // Document may be freed by GC
+
+		var elem = elem.rightChild();
+		otherElem.addChild(elem);
+		elem = "";						// Element refcount should be decremented by GC
+
+		var ext = MongoDataFile.getExtent();
+		ext = "";						// GC should _NOT_ free the Extent
+
+C++ Interface
+-------------
+
+#### TypeConverter<>
+Converts interpeter-specific types (e.g. Number, String, Object) to C++ types (e.g. uint64_t, string, BSONObj respectively).
+
+#### ObjWrapper<>
+Lightweight wrapper holding a pointer to the native object.  It is responsible for thunking the instance pointer and the class pointer to call a member function.
+
+#### Scope::Register()
+Register a class or function in a scope (usually the global scope).  Classes can be instantiated unless explicitly marked as non-constructable.  NOTE: Classes with private constructors may need a special registration function to ensure the interpreter's interface forbids instantiating an object.
+
+#### Scope::Push()
+Push an ObjWrapper into a scope (e.g. as a return value, local variable, or global variable).
+
+#### ObjWrapper::Call(...)
+Call a native member function.
+
+#### Scope::Fetch
+Fetch an object pointer (via ObjWrapper) from a scope.
+
+- - - - - - - - - - -
+
+An example of the code involved in registering a class named SomeClass with the interpreter would look something like this:
+
+	// example class
+	class SomeClass {
+	public:
+		int someMember(int a, const string& b, OtherClass *c);
+		static int someStatic(int a, const string& b, OtherClass *c);
+		void someMember(double a, double b, double c);
+	};
+
+...
+
+	// Small snippet of what semi-expanded registration functions may look like.  This is for
+	// illustrative purposes -- these will not need to be repeated for every possible
+	// combination (or number) of arguments.
+	template <typename _Class>
+	class Binding {
+	public:
+
+		explicit Binding(const char *name);
+
+		// Register a static/global function w/ 3 args and return value
+		template <typename Ret, typename Arg1, typename Arg2, typename Arg3>
+		void registerFunc(Ret(*fn)(Arg1, Arg2, Arg3), const char* name);
+
+		// Register a member function w/ 3 args and return value
+		template <typename Ret, typename Arg1, typename Arg2,  typename Arg3>
+		void registerFunc(Ret(_Class::*fn)(Arg1, Arg2, Arg3), const char* name);
+
+		// Register a member function w/ 3 args and no return value
+		template <typename Arg1, typename Arg2,  typename Arg3>
+		void registerFunc(void(_Class::*fn)(Arg1, Arg2, Arg3), const char* name);
+
+		// Register a static/global function w/ 3 args and no return value
+		template <typename Arg1, typename Arg2,  typename Arg3>
+		void registerFunc(void(*fn)(Arg1, Arg2, Arg3), const char* name);
+
+	};
+
+...
+
+	// Register a class
+	Binding <SomeClass>* someClassBinding = new Binding <SomeClass>("SomeClass");
+	someClassBinding.registerFunc(&SomeClass::someMember, "someMember");
+	someClassBinding.registerFunc(&SomeClass::someStatic, "someStatic");
+
+...
+
+	interpreter.push <SomeClass>(someClassBinding, GC_REFCOUNT);	// this can be simplified, I think
+
+In this example, someClassBinding would likely become the ObjWrapper.  The registerFunc<>() instantiations will add a TypeConverter<> for each argument.  String arguments are required as pushing or fetching an anonymous function is beyond the scope of this proposal (and of questionable utility).
+
+The interface is not complete -- all feedack and ideas are welcome and appreciated.
+
+
+TODO/Unsolved Issues
+====================
+- Handle function output parameters (how to handle function signature template?)
+- Handle arrays (Perhaps use BSONArray?)
+- Refcount management -- perhaps implement using template specializations that use smart_ptr<>?
+- Consider replacing RegisterFunc overloads with RegisterFuncN (N = num args) for clarity
+- Could a C++ FFI do a better job of handling this?
+
+Benefits
+========
+- Argument and return value conversion errors are detected at compile time instead of run time
+- Mitigate use of interpreter API outside of the binding interface
+- Remove redundant argument conversion/validation code
+- Ease addition of new interpreters (and languages)
+- Can simplify debugging and testing
+
+Caveates
+========
+- Only public members can be automatically bound
+- Some function signatures may be ambiguous and require template specializations (e.g. output parameters, void *)
+
+Goals
+=====
+- Add class binding system
+- Add object binding system
+- Implement TypeConverters based on existing v8 methods
+- Replace existing function wrapper with type-safe version that supports (mostly) arbitrary function signatures
+- Move towards a common C++ and JS/Python/Lua/Whatever API
+
+Non-Goals
+=========
+- Implementing support for anything other than v8
+- Eliminating wrapper functions entirely (although very few wrappers should call interpreter APIs)
+
+Future Goals
+============
+- Replace existing JS-only functions and wrappers
+- Recursively generate arg conversions (w/ c++11 variadic templates)
+- Integration with Aggregation Framework
+- Add LuaJIT and Python syntax to $where and M/R? :)
+
+Current Behavior
+================
+- We have a simple function for wrapping a function with the signature:
+
+		typedef BSONObj (*NativeFunction) ( const BSONObj &args, void* data );
+
+Testing
+=======
+A good stress test of the interface would be binding MutableBSON.  Actual code can be tested using standard unit tests.
+
+
