@@ -50,7 +50,6 @@ namespace mongo {
     }
 
     static void weakRefBSONCallback(v8::Persistent<v8::Value> p, void* scope) {
-        // should we lock here? no idea, and no doc from v8 of course
         HandleScope handle_scope;
         if (!p.IsNearDeath())
             return;
@@ -68,7 +67,6 @@ namespace mongo {
     }
 
     static void weakRefArrayCallback(v8::Persistent<v8::Value> p, void* scope) {
-        // should we lock here? no idea, and no doc from v8 of course
         HandleScope handle_scope;
         if (!p.IsNearDeath())
             return;
@@ -328,10 +326,6 @@ namespace mongo {
         // keep engine up after OOM
         v8::V8::IgnoreOutOfMemoryException();
 //        v8::V8::SetFatalErrorHandler(fatalHandler);
-
-//        v8::Locker l;
-//        v8::Locker::StartPreemption( 10 );
-
         v8::V8::Initialize();
     }
 
@@ -349,8 +343,6 @@ namespace mongo {
     }
 
     void V8ScriptEngine::interrupt( unsigned opSpec ) {
-        v8::Locker l;
-        v8Locks::InterruptLock il;
         if ( __interruptSpecToThreadId.count( opSpec ) ) {
             int thread = __interruptSpecToThreadId[ opSpec ];
             if ( thread == -2 || thread == -3) {
@@ -364,8 +356,6 @@ namespace mongo {
     }
 
     void V8ScriptEngine::interruptAll() {
-        v8::Locker l;
-        v8Locks::InterruptLock il;
         vector< Isolate* > toKill; // v8 mutex could potentially be yielded during the termination call
 
         for( map< unsigned, Isolate* >::const_iterator i = __interruptSpecToIsolate.begin(); i != __interruptSpecToIsolate.end(); ++i ) {
@@ -503,7 +493,6 @@ namespace mongo {
      * JS Callback that will call a c++ function with BSON arguments.
      */
     Handle< Value > V8Scope::nativeCallback( V8Scope* scope, const Arguments &args ) {
-//        V8Lock l;
         HandleScope handle_scope;
         Local< External > f = External::Cast( *args.Callee()->Get( scope->V8STR_NATIVE_FUNC ) );
         NativeFunction function = (NativeFunction)(f->Value());
@@ -585,7 +574,6 @@ namespace mongo {
     // ---- global stuff ----
 
     void V8Scope::init( const BSONObj * data ) {
-//        V8Lock l;
         if ( ! data )
             return;
 
@@ -803,9 +791,7 @@ namespace mongo {
         else
             v8recv = _global;
 
-        enableV8Interrupt(); // because of v8 locker we can check interrupted, then enable
         Local<Value> result = ((v8::Function*)(*funcValue))->Call( v8recv , nargs , nargs ? args.get() : 0 );
-        disableV8Interrupt();
 
         if ( result.IsEmpty() ) {
             stringstream ss;
@@ -861,9 +847,7 @@ namespace mongo {
             }
             return false;
         }
-        enableV8Interrupt(); // because of v8 locker we can check interrupted, then enable
         Handle<v8::Value> result = script->Run();
-        disableV8Interrupt();
         if ( result.IsEmpty() ) {
             stringstream ss;
             ss << "exec error: "
@@ -928,7 +912,6 @@ namespace mongo {
 
     void V8Scope::gc() {
         cout << "in gc" << endl;
-        V8Lock l;
         V8::LowMemoryNotification();
     }
 
@@ -1674,7 +1657,6 @@ namespace mongo {
     }
 
     Handle<v8::Value> V8Scope::GCV8(V8Scope* scope, const Arguments& args) {
-        V8Lock l;
         v8::V8::LowMemoryNotification();
         return v8::Undefined();
     }
@@ -1691,55 +1673,6 @@ namespace mongo {
         }
 //      cout << "Returning str " + str << endl;
         return ptr;
-    }
-
-    // to be called with v8 mutex
-    void V8Scope::enableV8Interrupt() {
-        v8Locks::InterruptLock l;
-        if ( globalScriptEngine->haveGetInterruptSpecCallback() ) {
-            unsigned op = globalScriptEngine->getInterruptSpec();
-            __interruptSpecToThreadId[ op ] = v8::V8::GetCurrentThreadId();
-            __interruptSpecToIsolate[ op ] = _isolate;
-        }
-    }
-
-    // to be called with v8 mutex
-    void V8Scope::disableV8Interrupt() {
-        v8Locks::InterruptLock l;
-        if ( globalScriptEngine->haveGetInterruptSpecCallback() ) {
-            unsigned op = globalScriptEngine->getInterruptSpec();
-            __interruptSpecToIsolate.erase( op );
-            __interruptSpecToThreadId.erase( op );
-        }
-    }
-
-    // to be called with v8 mutex
-    bool V8Scope::pauseV8Interrupt() {
-        v8Locks::InterruptLock l;
-        if ( globalScriptEngine->haveGetInterruptSpecCallback() ) {
-            unsigned op = globalScriptEngine->getInterruptSpec();
-            int thread = __interruptSpecToThreadId[ op ];
-            if ( thread == -2 || thread == -3) {
-                // already paused
-                return false;
-            }
-            __interruptSpecToThreadId[ op ] = -2;
-        }
-        return true;
-    }
-
-    // to be called with v8 mutex
-    bool V8Scope::resumeV8Interrupt() {
-        v8Locks::InterruptLock l;
-        if ( globalScriptEngine->haveGetInterruptSpecCallback() ) {
-            unsigned op = globalScriptEngine->getInterruptSpec();
-            if (__interruptSpecToThreadId[ op ] == -3) {
-                // was interrupted
-                return false;
-            }
-            __interruptSpecToThreadId[ op ] = v8::V8::GetCurrentThreadId();
-        }
-        return true;
     }
 
 } // namespace mongo

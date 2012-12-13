@@ -31,48 +31,6 @@ namespace mongo {
 
     typedef Handle< Value > (*v8Function) ( V8Scope* scope, const v8::Arguments& args );
 
-    // Preemption is going to be allowed for the v8 mutex, and some of our v8
-    // usage is not preemption safe.  So we are using an additional mutex that
-    // will not be preempted.  The V8Lock should be used in place of v8::Locker
-    // except in certain special cases involving interrupts.
-    namespace v8Locks {
-        struct InterruptLock {
-            InterruptLock();
-            ~InterruptLock();
-        };
-
-        // the implementations are quite simple - objects must be destroyed in
-        // reverse of the order created, and should not be shared between threads
-        struct RecursiveLock {
-            RecursiveLock();
-            ~RecursiveLock();
-            bool _unlock;
-        };
-        struct RecursiveUnlock {
-            RecursiveUnlock();
-            ~RecursiveUnlock();
-            bool _lock;
-        };
-    } // namespace v8Locks
-
-    class V8Lock {
-        public:
-        V8Lock() : _preemptionLock(Isolate::GetCurrent()){}
-
-        private:
-        v8Locks::RecursiveLock _noPreemptionLock;
-        v8::Locker _preemptionLock;
-    };
-
-    struct V8Unlock {
-        public:
-        V8Unlock() : _preemptionUnlock(Isolate::GetCurrent()){}
-
-        private:
-        v8::Unlocker _preemptionUnlock;
-        v8Locks::RecursiveUnlock _noPreemptionUnlock;
-    };
-
     class BSONHolder {
     public:
 
@@ -198,12 +156,6 @@ namespace mongo {
 
         v8::Isolate* getIsolate() { return _isolate; }
         Persistent<Context> getContext() { return _context; }
-
-        // call with v8 mutex:
-        void enableV8Interrupt();
-        void disableV8Interrupt();
-        bool pauseV8Interrupt();
-        bool resumeV8Interrupt();
 
         Handle<v8::String> V8STR_CONN;
         Handle<v8::String> V8STR_ID;
