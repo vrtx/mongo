@@ -88,6 +88,7 @@ namespace mongo {
         Local< v8::Function > __createFunction( const char * code );
         virtual int invoke( ScriptingFunction func , const BSONObj* args, const BSONObj* recv, int timeoutMs = 0 , bool ignoreReturn = false, bool readOnlyArgs = false, bool readOnlyRecv = false );
         virtual bool exec( const StringData& code , const string& name , bool printResult , bool reportError , bool assertOnError, int timeoutMs );
+        void kill();
         virtual string getError() { return _error; }
         virtual bool hasOutOfMemoryException();
 
@@ -192,12 +193,23 @@ namespace mongo {
         static Handle< Value > Version(V8Scope* scope, const v8::Arguments& args);
         static Handle< Value > GCV8(V8Scope* scope, const v8::Arguments& args);
 
+        /** Signal that this scope has entered a callback and is executing native code.
+         *  @return  false if execution of this scope was interrupted
+         *           true if this scope was not interrupted
+         */
+        bool V8Scope::enterCallback();
+
+        /** Signal that this scope has completed executing a callback and is returning to v8.
+         *  @return  false if execution of this scope was interrupted
+         *           true if this scope was not interrupted
+         */
+        bool V8Scope::leaveCallback();
+
 
         V8ScriptEngine * _engine;
 
         Persistent<Context> _context;
         Persistent<v8::Object> _global;
-
         string _error;
         vector< Persistent<Value> > _funcs;
         v8::Persistent<v8::Object> _emptyObj;
@@ -213,6 +225,9 @@ namespace mongo {
         Persistent<v8::ObjectTemplate> lzArrayTemplate;
         Persistent<v8::ObjectTemplate> internalFieldObjects;
         v8::Isolate* _isolate;
+        SimpleMutex _interruptLock;
+        bool _inNativeCallback; // protected by _interruptLock
+        bool _pendingKill;      // protected by _interruptLock
     };
 
     class V8ScriptEngine : public ScriptEngine {
@@ -231,6 +246,9 @@ namespace mongo {
 
     private:
         friend class V8Scope;
+        typedef map<unsigned, V8Scope*> OpIdToScopeMap;
+        OpIdToScopeMap _opToScopeMap; // protected by _globalInterruptLock
+        mongo::mutex _globalInterruptLock;
     };
 
     class ExternalString : public v8::String::ExternalAsciiStringResource {
