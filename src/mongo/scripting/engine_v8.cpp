@@ -21,8 +21,6 @@
 #include "mongo/scripting/v8_utils.h"
 #include "mongo/util/mongoutils/str.h"
 
-#define V8_SIMPLE_HEADER v8::Locker l(_isolate); v8::Isolate::Scope iscope(_isolate); HandleScope handle_scope; Context::Scope context_scope( _context );
-
 namespace mongo {
 
     /**
@@ -350,9 +348,23 @@ namespace mongo {
     void V8ScriptEngine::interrupt(unsigned opSpec ) {
         mongo::mutex::scoped_lock interruptLock(_globalInterruptLock);
         OpIdToScopeMap::iterator iScope = _opToScopeMap.find(opSpec);
-        if (iScope == _opToScopeMap.end())
+        if (iScope == _opToScopeMap.end()) {
             // got interrupt request for a scope that no longer exists
+            log() << "interrupt for scope that doesn't exist.  op: " << opSpec << endl;
+            log() << "Existing ops:" << endl;
+            for(OpIdToScopeMap::iterator iSc = _opToScopeMap.begin();
+                iSc != _opToScopeMap.end(); ++iSc) {
+                log() << " op" << iSc->first << endl;
+            }
             return;
+        }
+        log() << "interrupting op: " << opSpec << endl;
+        log() << "Existing ops:" << endl;
+        for(OpIdToScopeMap::iterator is = _opToScopeMap.begin();
+            is != _opToScopeMap.end(); ++is) {
+            log() << " op" << is->first << endl;
+        }
+
         iScope->second->kill();
     }
 
@@ -362,13 +374,33 @@ namespace mongo {
         mongo::mutex::scoped_lock interruptLock(_globalInterruptLock);
         // TODO: defer termination if _interruptLock is locked
         for(OpIdToScopeMap::iterator iScope = _opToScopeMap.begin();
-            iScope != _opToScopeMap.end(); ++i) {
+            iScope != _opToScopeMap.end(); ++iScope) {
             iScope->second->kill();
         }
     }
 
-    // --- scope ---
+    void V8Scope::registerOpSpec() {
+        scoped_lock(_engine->_globalInterruptLock);
+        if (_engine->haveGetInterruptSpecCallback()) {
+            // this scope has an associated operation id
+            _opSpec = _engine->getInterruptSpec();
+            _engine->_opToScopeMap[_opSpec] = this;
+        }
+        else
+            _opSpec = 0;
 
+    }
+
+    void V8Scope::unregisterOpSpec() {
+        scoped_lock(_engine->_globalInterruptLock);
+        if (_engine->haveGetInterruptSpecCallback() && _opSpec != 0) {
+            V8ScriptEngine::OpIdToScopeMap::iterator it = _engine->_opToScopeMap.find(_opSpec);
+            if (it != _engine->_opToScopeMap.end())
+                _engine->_opToScopeMap.erase(it);
+        }
+    }
+
+    // --- scope ---
     V8Scope::V8Scope( V8ScriptEngine * engine )
         : _engine( engine ) ,
           _connectState( NOT ),
@@ -376,13 +408,11 @@ namespace mongo {
           _inNativeCallback(false),
           _pendingKill(false) {
 
-        {
-            scoped_lock(engine->_globalInterruptLock);
-            engine->_opToScopeMap[engine->getInterruptSpec()] = this;
-        }
+        registerOpSpec();
         // create new isolate and enter it via a scope
         _isolate = v8::Isolate::New();
         v8::Isolate::Scope iscope(_isolate);
+        log() << "Created isolate at: " << _isolate << endl;
 
         // resource constraints must be set on isolate, before any call or lock
         int K = 1024;
@@ -390,17 +420,19 @@ namespace mongo {
         rc.set_max_young_space_size(4 * K * K);
         rc.set_max_old_space_size(64 * K * K);
         v8::SetResourceConstraints(&rc);
-        V8::AddGCPrologueCallback(gcCallback, kGCTypeMarkSweepCompact);
-
-        // keep engine up after OOM
-        v8::V8::IgnoreOutOfMemoryException();
-//        V8::SetFatalErrorHandler(fatalHandler);
 
         v8::Locker l(_isolate);
-
         HandleScope handleScope;
         _context = Context::New();
         Context::Scope context_scope( _context );
+
+        V8::AddGCPrologueCallback(gcCallback, kGCTypeMarkSweepCompact);
+        // keep engine up after OOM
+        v8::V8::IgnoreOutOfMemoryException();
+        v8::Locker::StartPreemption(100);
+
+//        V8::SetFatalErrorHandler(fatalHandler);
+
         _global = Persistent< v8::Object >::New( _context->Global() );
         _emptyObj = Persistent< v8::Object >::New( v8::Object::New() );
 
@@ -456,19 +488,18 @@ namespace mongo {
         injectV8Function("print", Print);
         injectV8Function("version", Version);
         injectV8Function("load", load);
-
+        // shell_utils::initScope(*this);  // BB TODO
+        // installGlobalUtils(*this);      // BB TODO
         injectV8Function("gc", GCV8);
 
         installDBTypes( this, _global );
     }
 
     V8Scope::~V8Scope() {
-        {
-            scoped_lock(engine->_globalInterruptLock);
-            _opToScopeMap.erase(engine->getInterruptSpec());
-        }
+        unregisterOpSpec();
         {
             V8_SIMPLE_HEADER
+            v8::Locker::StopPreemption();
             _emptyObj.Dispose();
             for( unsigned i = 0; i < _funcs.size(); ++i )
                 _funcs[ i ].Dispose();
@@ -487,6 +518,7 @@ namespace mongo {
             _context.Dispose();
         }
         _isolate->Dispose();
+        // log() << " *** Destructing V8Scope @ " << hex << this << endl;
     }
 
     bool V8Scope::hasOutOfMemoryException() {
@@ -497,23 +529,20 @@ namespace mongo {
     }
 
     /**
-     * JS Callback that will call a c++ function with BSON arguments.
+     * Interpreter agnostic 'Native Callback' function binding.  Note this is only called
+     * via v8Callback(), so no need to notify of preemption.
      */
     Handle< Value > V8Scope::nativeCallback( V8Scope* scope, const Arguments &args ) {
-        if (!scope->enterCallback())
-            return v8::ThrowException(v8::String::New("script exeuction interrupted"));
-
         BSONObj ret;
         string exception;
+        HandleScope handle_scope;
         try {
-            HandleScope handle_scope;
             Local<External> f = External::Cast(*args.Callee()->Get(scope->V8STR_NATIVE_FUNC));
             NativeFunction function = (NativeFunction)(f->Value());
             Local<External> data = External::Cast(*args.Callee()->Get(scope->V8STR_NATIVE_DATA));
             BSONObjBuilder b;
             for(int i = 0; i < args.Length(); ++i)
                 scope->v8ToMongoElement(b, mongoutils::str::stream() << i, args[i]);
-            }
             BSONObj nativeArgs = b.obj();
             ret = function(nativeArgs, data->Value());
         }
@@ -523,9 +552,6 @@ namespace mongo {
         catch( ... ) {
             exception = "unknown exception";
         }
-
-        if (!scope->leaveCallback() && exception.empty())
-            return v8::ThrowException(v8::String::New("script exeuction interrupted"));
 
         if (!exception.empty())
             return v8::ThrowException(v8::String::New(exception.c_str()));
@@ -554,6 +580,7 @@ namespace mongo {
         v8Function function = (v8Function)(f->Value());
         Local< External > scp = External::Cast( *args.Data() );
         V8Scope* scope = (V8Scope*)(scp->Value());
+        v8::Locker l(scope->_isolate);
 
         if (!scope->enterCallback())
             return v8::ThrowException( v8::String::New( "script exeuction interrupted" ) );
@@ -580,7 +607,11 @@ namespace mongo {
     }
 
     bool V8Scope::enterCallback() {
-        SimpleMutex::scoped_lock(_interruptLock);
+        SimpleMutex::scoped_lock cbEnterLock(_interruptLock);
+        if (v8::V8::IsExecutionTerminating()) {
+            log() << "execution terminating in enterCallback! " << endl;
+            return false;      
+        }
         if (_pendingKill || globalScriptEngine->interrupted())
             return false;
         _inNativeCallback = true;
@@ -588,7 +619,11 @@ namespace mongo {
     }
 
     bool V8Scope::leaveCallback() {
-        SimpleMutex::scoped_lock(_interruptLock);
+        SimpleMutex::scoped_lock cbLeaveLock(_interruptLock);
+        if (v8::V8::IsExecutionTerminating()) {
+            log() << "execution terminating in leaveCallback! " << endl;
+            return false;      
+        }
         if (_pendingKill || globalScriptEngine->interrupted())
             return false;
         _inNativeCallback = false;
@@ -596,13 +631,10 @@ namespace mongo {
     }
 
     void V8Scope::kill() {
-        _interruptLock.lock();
+        v8::Locker isolateLock(_isolate);
+        SimpleMutex::scoped_lock interruptLock(_interruptLock);
         _pendingKill = true;
-        {
-            v8::Locker(_isolate);
-            v8::V8::TerminateExecution(_isolate);
-        }
-        _interruptLock.unlock();
+        v8::V8::TerminateExecution(_isolate);
     }
 
     // ---- global stuff ----
@@ -813,6 +845,7 @@ namespace mongo {
         }
         if ( globalScriptEngine->interrupted() ) {
             stringstream ss;
+            // BB: TODO: better error message
             ss << "error in invoke: " << globalScriptEngine->checkInterrupt();
             _error = ss.str();
             log() << _error << endl;
@@ -829,6 +862,7 @@ namespace mongo {
 
         if ( result.IsEmpty() ) {
             stringstream ss;
+            // BB: TODO: better error message
             ss << "error in invoke: "
                << ( (try_catch.HasCaught() && try_catch.CanContinue()) ?
                         toSTLString(&try_catch) :
@@ -992,7 +1026,12 @@ namespace mongo {
     // ----- internal -----
 
     void V8Scope::reset() {
+        _isolate->Exit();
         _startCall();
+        unregisterOpSpec();
+        registerOpSpec();
+        log() << "reset scope." << endl;
+        _isolate->Enter();
     }
 
     void V8Scope::_startCall() {

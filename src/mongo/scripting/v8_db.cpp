@@ -339,7 +339,19 @@ namespace {
                 return v8::ThrowException( v8::String::New( "Could not create a cursor" ) );
             }
 
+            log() << " Scope " << scope << " new cursor cons instance " << endl;
             Persistent<v8::Object> c = Persistent<v8::Object>::New( cons->NewInstance() );
+            if (v8::V8::IsExecutionTerminating()) {
+                log() << "EXECUTION TERMINATING!!!" << endl;
+            }
+            if (c.IsEmpty()) {
+                log() << "Empty cursor constructor instance!  new instance: " << *cons->NewInstance() << endl;
+                log() << "Cursor: " << cursor.get() << endl;
+                return v8::ThrowException( v8::String::New( "empty cursor instantiated!" ) );
+            }
+            else {
+                log() << " Scope " << scope << " nonempty. " << endl;
+            }
             c.MakeWeak( cursor.get() , destroyCursor );
             c->SetInternalField( 0 , External::New( cursor.release() ) );
             return handle_scope.Close(c);
@@ -680,6 +692,11 @@ namespace {
     v8::Handle<v8::Value> collectionGetter( v8::Local<v8::String> name, const v8::AccessorInfo &info) {
         DDD( "collectionFallback [" << name << "]" );
 
+        TryCatch tryCatch;
+        if (tryCatch.HasCaught()) {
+            log() << "Caught!" << endl;
+            return v8::ThrowException( v8::String::New("EX!") ); //tryCatch.Exception() 
+        }
         // first look in prototype, may be a function
         v8::Handle<v8::Value> real = info.This()->GetPrototype()->ToObject()->Get( name );
         if ( !real->IsUndefined() )
@@ -704,7 +721,6 @@ namespace {
         v8::Handle<v8::Value> getCollection = info.This()->GetPrototype()->ToObject()->Get( v8::String::New( "getCollection" ) );
         verify( getCollection->IsFunction() );
 
-        TryCatch tryCatch;
         v8::Function * f = (v8::Function*)(*getCollection);
         v8::Handle<v8::Value> argv[1];
         argv[0] = name;

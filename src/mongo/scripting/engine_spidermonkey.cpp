@@ -1278,6 +1278,15 @@ namespace spidermonkey {
         }
 
         Scope * createScope();
+        Scope * newScope() {
+            Scope *s = createScope();
+            if (!s)
+                return NULL;
+            if (_scopeInitCallback )
+                _scopeInitCallback( *s );
+            installGlobalUtils( *s );
+            return s;
+        }
 
         void runTest();
 

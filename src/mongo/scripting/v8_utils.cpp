@@ -182,25 +182,23 @@ namespace mongo {
             JSThread( JSThreadConfig &config ) : config_( config ) {}
 
             void operator()() {
-                V8Scope* scope = config_._scope.get();
-                v8::Isolate::Scope iscope(scope->getIsolate());
-                v8::Locker l(scope->getIsolate());
-                HandleScope handle_scope;
-                Context::Scope context_scope( scope->getContext() );
-
+                V8Scope* _scope = config_._scope.get();
+                v8::Isolate* _isolate = _scope->getIsolate();
+                v8::Handle<Context> _context = _scope->getContext();
+                V8_SIMPLE_HEADER
                 BSONObj args = config_.args_;
-                Local< v8::Function > f = v8::Function::Cast( *(scope->mongoToV8Element(args.firstElement(), true)) );
+                Local< v8::Function > f = v8::Function::Cast( *(_scope->mongoToV8Element(args.firstElement(), true)) );
                 int argc = args.nFields() - 1;
 
                 boost::scoped_array< Local< Value > > argv( new Local< Value >[ argc ] );
                 BSONObjIterator it(args);
                 it.next();
                 for( int i = 0; i < argc; ++i ) {
-                    argv[ i ] = Local< Value >::New( scope->mongoToV8Element(*it, true) );
+                    argv[ i ] = Local< Value >::New( _scope->mongoToV8Element(*it, true) );
                     it.next();
                 }
                 TryCatch try_catch;
-                Handle< Value > ret = f->Call( scope->getContext()->Global(), argc, argv.get() );
+                Handle< Value > ret = f->Call( _scope->getContext()->Global(), argc, argv.get() );
                 if ( ret.IsEmpty() ) {
                     string e = toSTLString( &try_catch );
                     log() << "js thread raised exception: " << e << endl;
@@ -209,7 +207,7 @@ namespace mongo {
                 }
                 // ret is translated to BSON to switch isolate
                 BSONObjBuilder b;
-                scope->v8ToMongoElement(b, "ret", ret);
+                _scope->v8ToMongoElement(b, "ret", ret);
                 config_.returnData_ = b.obj();
             }
 

@@ -24,6 +24,8 @@
 
 using namespace v8;
 
+#define V8_SIMPLE_HEADER v8::Locker il(_isolate); v8::Isolate::Scope iscope(_isolate); HandleScope handle_scope; Context::Scope context_scope( _context );
+
 namespace mongo {
 
     class V8ScriptEngine;
@@ -197,14 +199,17 @@ namespace mongo {
          *  @return  false if execution of this scope was interrupted
          *           true if this scope was not interrupted
          */
-        bool V8Scope::enterCallback();
+        bool enterCallback();
 
         /** Signal that this scope has completed executing a callback and is returning to v8.
          *  @return  false if execution of this scope was interrupted
          *           true if this scope was not interrupted
          */
-        bool V8Scope::leaveCallback();
+        bool leaveCallback();
 
+
+        void registerOpSpec();
+        void unregisterOpSpec();
 
         V8ScriptEngine * _engine;
 
@@ -213,6 +218,7 @@ namespace mongo {
         string _error;
         vector< Persistent<Value> > _funcs;
         v8::Persistent<v8::Object> _emptyObj;
+        int _opSpec;
 
         enum ConnectState { NOT , LOCAL , EXTERNAL };
         ConnectState _connectState;
@@ -236,7 +242,15 @@ namespace mongo {
         virtual ~V8ScriptEngine();
 
         virtual Scope * createScope() { return new V8Scope( this ); }
-
+        virtual Scope * newScope() {
+            Scope *s = createScope();
+            if (!s)
+                return NULL;
+            if (_scopeInitCallback)
+                _scopeInitCallback( *s );
+            installGlobalUtils( *s );
+            return s;
+        }
         virtual void runTest() {}
 
         bool utf8Ok() const { return true; }

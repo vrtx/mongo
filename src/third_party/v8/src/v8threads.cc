@@ -33,6 +33,8 @@
 #include "execution.h"
 #include "v8threads.h"
 #include "regexp-stack.h"
+#include "stdio.h"
+#include <iostream>
 
 namespace v8 {
 
@@ -435,6 +437,7 @@ ContextSwitcher::ContextSwitcher(Isolate* isolate, int every_n_ms)
 // Set the scheduling interval of V8 threads. This function starts the
 // ContextSwitcher thread if needed.
 void ContextSwitcher::StartPreemption(int every_n_ms) {
+  // printf("preemption started in tid: %d\n", ThreadId::Current().ToInteger());  
   Isolate* isolate = Isolate::Current();
   ASSERT(Locker::IsLocked(reinterpret_cast<v8::Isolate*>(isolate)));
   if (isolate->context_switcher() == NULL) {
@@ -473,13 +476,16 @@ void ContextSwitcher::Run() {
   while (keep_going_) {
     OS::Sleep(sleep_ms_);
     isolate()->stack_guard()->Preempt();
+    // printf("cx switcher running in tid: %d\n", ThreadId::Current().ToInteger());  
   }
 }
 
 
 // Acknowledge the preemption by the receiving thread.
 void ContextSwitcher::PreemptionReceived() {
-  ASSERT(Locker::IsLocked());
+  // printf("preemtion check from tid: %d\n",  ThreadId::Current().ToInteger());  
+  // std::cout << "Default: " << i::Isolate::GetDefaultIsolateForLocking() << ", Current: " << Isolate::Current() << std::endl;
+  ASSERT(Locker::IsLocked(reinterpret_cast<v8::Isolate*>(Isolate::Current())));
   // There is currently no accounting being done for this. But could be in the
   // future, which is why we leave this in.
 }

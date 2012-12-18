@@ -160,13 +160,7 @@ namespace mongo {
         ScriptEngine();
         virtual ~ScriptEngine();
 
-        virtual Scope * newScope() {
-            Scope *s = createScope();
-            if ( s && _scopeInitCallback )
-                _scopeInitCallback( *s );
-            installGlobalUtils( *s );
-            return s;
-        }
+        virtual Scope * newScope() = 0;
 
         virtual void runTest() = 0;
 
@@ -214,11 +208,12 @@ namespace mongo {
         }
         static std::string getInterpreterVersionString();
 
+        void ( *_scopeInitCallback )( Scope & );
+
     protected:
         virtual Scope * createScope() = 0;
 
     private:
-        void ( *_scopeInitCallback )( Scope & );
         static void ( *_connectCallback )( DBClientWithCommands & );
         static const char * ( *_checkInterruptCallback )();
         static unsigned ( *_getInterruptSpecCallback )();
