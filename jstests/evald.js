@@ -2,7 +2,7 @@ t = db.jstests_evald;
 t.drop();
 
 function debug( x ) {
-   // printjson( x );
+//    printjson( x );
 }
 
 for( i = 0; i < 10; ++i ) {
@@ -53,17 +53,18 @@ function doIt( ev, wait, where ) {
 
 }
 
-// doIt( "db.jstests_evald.count( { $where: function() { while( 1 ) { sleep(1); } } } )", true, true );
-// doIt( "db.jstests_evald.count( { $where: function() { while( 2 ) { sleep(1); } } } )", false, true );
+doIt( "db.jstests_evald.count( { $where: function() { while( 1 ) { sleep(1); } } } )", true, true );
+doIt( "db.jstests_evald.count( { $where: function() { while( 1 ) { sleep(1); } } } )", false, true );
+doIt( "while( true ) { sleep(1);}", false );
+doIt( "while( true ) { sleep(1);}", true );
 
-// doIt( "while( 3 ) { sleep(1);}", false );
-// doIt( "while( 4 ) { sleep(1);}", true );
+// the for loops are currently required, as a spawned op masks the parent op - see SERVER-1931
+doIt( "while( 1 ) { for( var i = 0; i < 10000; ++i ) {;} db.jstests_evald.count( {i:10} ); }", true );
+doIt( "while( 1 ) { for( var i = 0; i < 10000; ++i ) {;} db.jstests_evald.count( {i:10} ); }", false );
+doIt( "while( 1 ) { for( var i = 0; i < 10000; ++i ) {;} db.jstests_evald.count(); }", true );
+doIt( "while( 1 ) { for( var i = 0; i < 10000; ++i ) {;} db.jstests_evald.count(); }", false );
 
-// // the for loops are currently required, as a spawned op masks the parent op - see SERVER-1931
-// doIt( "while( 5 ) { for( var i = 0; i < 10000; ++i ) {;} db.jstests_evald.count( {i:10} ); }", true );
-// doIt( "while( 6 ) { for( var i = 0; i < 10000; ++i ) {;} db.jstests_evald.count( {i:10} ); }", false );
-// doIt( "while( 7 ) { for( var i = 0; i < 10000; ++i ) {;} db.jstests_evald.count(); }", true );
-// doIt( "while( 8 ) { for( var i = 0; i < 10000; ++i ) {;} db.jstests_evald.count(); }", false );
-
-doIt( "while( 9 ) { for( var i = 0; i < 10000; ++i ) {;} try { db.jstests_evald.count( {i:10} ); print(1); } catch ( e ) { } }", true );
-doIt( "while( 10 ) { try { while( 1 ) { sleep(1); } } catch ( e ) { } }", true );
+// try/catch with tight-loop kill tests
+doIt( "while( 1 ) { for( var i = 0; i < 10000; ++i ) {;} try { db.jstests_evald.count( {i:10} ); } catch ( e ) { } }", true );
+doIt( "while( 1 ) { try { while( 1 ) { sleep(1); } } catch ( e ) { } }", true );
+doIt( "while( 1 ) { try { while( 1 ) { ; } } catch ( e ) { } }", true );

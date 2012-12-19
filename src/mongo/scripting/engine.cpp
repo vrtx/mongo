@@ -466,19 +466,18 @@ namespace mongo {
     };
 
     auto_ptr<Scope> ScriptEngine::getPooledScope( const string& pool ) {
-        // if ( ! scopeCache.get() ) {
-        //     scopeCache.reset( new ScopeCache() );
-        // }
+        if ( ! scopeCache.get() ) {
+            scopeCache.reset( new ScopeCache() );
+        }
 
-        // Scope * s = scopeCache->get( pool );
-        // if ( ! s ) {
-        //     s = newScope();
-        // }
+        Scope * s = scopeCache->get( pool );
+        if ( ! s ) {
+            s = newScope();
+        }
 
-        // auto_ptr<Scope> p;
-        // p.reset( new PooledScope( pool , s ) );
-        // return p;
-        return auto_ptr<Scope>(new PooledScope(pool, newScope()));
+        auto_ptr<Scope> p;
+        p.reset( new PooledScope( pool , s ) );
+        return p;
     }
 
     void ScriptEngine::threadDone() {

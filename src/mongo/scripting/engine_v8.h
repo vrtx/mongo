@@ -22,9 +22,14 @@
 
 #include "mongo/scripting/engine.h"
 
+#include "mongo/base/disallow_copying.h"
+
 using namespace v8;
 
-#define V8_SIMPLE_HEADER v8::Locker il(_isolate); v8::Isolate::Scope iscope(_isolate); HandleScope handle_scope; Context::Scope context_scope( _context );
+#define V8_SIMPLE_HEADER v8::Locker v8lock(_isolate); \
+                         v8::Isolate::Scope iscope(_isolate); \
+                         HandleScope handle_scope; \
+                         Context::Scope context_scope(_context);
 
 namespace mongo {
 
@@ -53,6 +58,16 @@ namespace mongo {
 
     };
 
+    /**
+      * A V8Scope represents a unit of javascript execution environment; specifically a single
+      * isolate and a single context executing in a single mongo thread.  A V8Scope can be reused
+      * in another thread only after reset() has been called.
+      *
+      * NB:
+      *   - v8 objects/handles/etc. cannot be shared between V8Scopes
+      *   - in mongod, each scope is associated with an opSpec (for KillOp support)
+      *   - any public functions that call the v8 API should have a V8_SIMPLE_HEADER
+      */
     class V8Scope : public Scope {
     public:
 
@@ -72,7 +87,6 @@ namespace mongo {
         virtual string getString( const char *field );
         virtual bool getBoolean( const char *field );
         virtual BSONObj getObject( const char *field );
-        Handle<v8::Object> getGlobalObject() { return _global; };
 
         virtual int type( const char *field );
 
@@ -264,6 +278,42 @@ namespace mongo {
         OpIdToScopeMap _opToScopeMap; // protected by _globalInterruptLock
         mongo::mutex _globalInterruptLock;
     };
+
+
+    /** 
+     * Stack allocated V8Scope accessor.  Use this to enter the V8 scope from another thread.
+     * While allocated on the stack, the V8Scope is temporarily 'owned' by the calling thread.
+     * Note the order of construction is important here.
+     */
+    class EnterV8Scope {
+        MONGO_DISALLOW_COPYING(EnterV8Scope);
+    public:
+        EnterV8Scope(mongo::V8Scope* scope) :
+            _isolateScope(scope->getIsolate()),
+            _handleScope(),
+            _contextScope(scope->getContext()) {
+        }
+    private:
+        const v8::Isolate::Scope _isolateScope;
+        const v8::HandleScope _handleScope;
+        const v8::Context::Scope _contextScope;
+    };
+
+    /** 
+     * Stack allocated V8Scope accessor with v8 locker acquisition
+     */
+    class EnterV8ScopeLocked {
+        MONGO_DISALLOW_COPYING(EnterV8ScopeLocked);
+    public:
+        EnterV8ScopeLocked(mongo::V8Scope* scope) :
+            _v8Lock(scope->getIsolate()),
+            _enteredScope(scope) {
+        }
+    private:
+        const v8::Locker _v8Lock;
+        const EnterV8Scope _enteredScope;
+    };
+
 
     class ExternalString : public v8::String::ExternalAsciiStringResource {
     public:

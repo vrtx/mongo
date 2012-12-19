@@ -339,7 +339,7 @@ namespace {
                 return v8::ThrowException( v8::String::New( "Could not create a cursor" ) );
             }
 
-            log() << " Scope " << scope << " new cursor cons instance " << endl;
+            // log() << " Scope " << scope << " new cursor cons instance " << endl;
             Persistent<v8::Object> c = Persistent<v8::Object>::New( cons->NewInstance() );
             if (v8::V8::IsExecutionTerminating()) {
                 log() << "EXECUTION TERMINATING!!!" << endl;
@@ -348,9 +348,6 @@ namespace {
                 log() << "Empty cursor constructor instance!  new instance: " << *cons->NewInstance() << endl;
                 log() << "Cursor: " << cursor.get() << endl;
                 return v8::ThrowException( v8::String::New( "empty cursor instantiated!" ) );
-            }
-            else {
-                log() << " Scope " << scope << " nonempty. " << endl;
             }
             c.MakeWeak( cursor.get() , destroyCursor );
             c->SetInternalField( 0 , External::New( cursor.release() ) );
