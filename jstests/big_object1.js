@@ -36,7 +36,13 @@ if ( db.adminCommand( "buildinfo" ).bits == 64 ){
     
     for ( i=0; i<x; i++ ){
         o = t.findOne( { _id : i } )
-        assert( o , "B" + i );
+        try {
+            // test large mongo -> js conversion
+            var a = o.a;
+        } catch(e) {
+            assert(false, "B" + i + ": " + e);
+        }
+        assert( o , "C" + i );
     }
     
     t.drop()

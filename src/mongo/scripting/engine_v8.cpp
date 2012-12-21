@@ -310,11 +310,8 @@ namespace mongo {
     }
 
     V8ScriptEngine::V8ScriptEngine() :
+        _opToScopeMap(),
         _globalInterruptLock("GlobalV8InterruptLock") {
-
-        // keep engine up after OOM
-        v8::V8::IgnoreOutOfMemoryException();
-        v8::V8::Initialize();
     }
 
     V8ScriptEngine::~V8ScriptEngine() {
@@ -330,16 +327,16 @@ namespace mongo {
         return "V8 3.12.19";
     }
 
-    void V8ScriptEngine::interrupt(unsigned opSpec) {
+    void V8ScriptEngine::interrupt(unsigned opId) {
         mongo::mutex::scoped_lock intLock(_globalInterruptLock);
-        OpIdToScopeMap::iterator iScope = _opToScopeMap.find(opSpec);
+        OpIdToScopeMap::iterator iScope = _opToScopeMap.find(opId);
         if (iScope == _opToScopeMap.end()) {
             // got interrupt request for a scope that no longer exists
-            LOG(1) << "received interrupt request for unkown op: " << opSpec
+            LOG(1) << "received interrupt request for unknown op: " << opId
                    << printKnownOps_inlock() << endl;
             return;
         }
-        LOG(1) << "interrupting op: " << opSpec << printKnownOps_inlock() << endl;
+        LOG(1) << "interrupting op: " << opId << printKnownOps_inlock() << endl;
         iScope->second->kill();
     }
 
@@ -351,25 +348,25 @@ namespace mongo {
         }
     }
 
-    void V8Scope::registerOpSpec() {
+    void V8Scope::registerOpId() {
         scoped_lock(_engine->_globalInterruptLock);
-        if (_engine->haveGetInterruptSpecCallback()) {
-            // this scope has an associated operation id
-            _opSpec = _engine->getInterruptSpec();
-            _engine->_opToScopeMap[_opSpec] = this;
+        if (_engine->haveGetCurrentOpIdCallback()) {
+            // this scope has an associated operation
+            _opId = _engine->getCurrentOpId();
+            _engine->_opToScopeMap[_opId] = this;
         }
         else
             // no associated op id (e.g. running from shell)
-            _opSpec = 0;
-        LOG(2) << "V8Scope " << this << " registered for op " << _opSpec << endl;
+            _opId = 0;
+        LOG(2) << "V8Scope " << this << " registered for op " << _opId << endl;
     }
 
-    void V8Scope::unregisterOpSpec() {
+    void V8Scope::unregisterOpId() {
         scoped_lock(_engine->_globalInterruptLock);
-        LOG(2) << "V8Scope " << this << " unregistered for op " << _opSpec << endl;
-        if (_engine->haveGetInterruptSpecCallback() || _opSpec != 0) {
+        LOG(2) << "V8Scope " << this << " unregistered for op " << _opId << endl;
+        if (_engine->haveGetCurrentOpIdCallback() || _opId != 0) {
             // scope is currently associated with an operation id
-            V8ScriptEngine::OpIdToScopeMap::iterator it = _engine->_opToScopeMap.find(_opSpec);
+            V8ScriptEngine::OpIdToScopeMap::iterator it = _engine->_opToScopeMap.find(_opId);
             if (it != _engine->_opToScopeMap.end())
                 _engine->_opToScopeMap.erase(it);
         }
@@ -386,14 +383,14 @@ namespace mongo {
             v8::V8::TerminateExecution(_isolate);
             return false;
         }
-        _inNativeCallback = true;
+        _inNativeExecution = true;
         return true;
     }
 
     bool V8Scope::nativeEpilogue() {
         v8::Locker l(_isolate);
         mongo::mutex::scoped_lock cbLeaveLock(_interruptLock);
-        _inNativeCallback = false;
+        _inNativeExecution = false;
         if (v8::V8::IsExecutionTerminating(_isolate)) {
             LOG(3) << "v8 execution preempted.  Isolate: " << _isolate << endl;
             return false;
@@ -408,7 +405,7 @@ namespace mongo {
 
     void V8Scope::kill() {
         mongo::mutex::scoped_lock interruptLock(_interruptLock);
-        if (!_inNativeCallback) {
+        if (!_inNativeExecution) {
             v8::V8::TerminateExecution(_isolate);
             LOG(1) << "Killing V8 Scope.  Isolate: " << _isolate << endl;
         } else {
@@ -437,7 +434,7 @@ namespace mongo {
         : _engine(engine),
           _connectState(NOT),
           _interruptLock("ScopeInterruptLock"),
-          _inNativeCallback(true),
+          _inNativeExecution(true),
           _pendingKill(false) {
 
         // create new isolate and enter it via a scope
@@ -446,7 +443,7 @@ namespace mongo {
 
         // resource constraints must be set on isolate, before any call or lock
         v8::ResourceConstraints rc;
-        rc.set_max_young_space_size(16 * 1024 * 1024);
+        rc.set_max_young_space_size(4 * 1024 * 1024);
         rc.set_max_old_space_size(64 * 1024 * 1024);
         v8::SetResourceConstraints(&rc);
 
@@ -459,11 +456,9 @@ namespace mongo {
         // display heap statistics on MarkAndSweep GC run
         V8::AddGCPrologueCallback(gcCallback, kGCTypeMarkSweepCompact);
 
-        // keep engine up after OOM
-        v8::V8::IgnoreOutOfMemoryException();
-
-        // start the v8 lock context switcher
-        v8::Locker::StartPreemption(100);   // preempt every 100 ms.
+        // start the v8 lock context switcher, and preempt execution every 500ms.  This is
+        // required for busy loops in javascript which do not call native functions.
+        v8::Locker::StartPreemption(500);
 
         // create a global (rooted) object
         _global = Persistent< v8::Object >::New( _context->Global() );
@@ -524,11 +519,11 @@ namespace mongo {
 
         installDBTypes(this, _global);
 
-        registerOpSpec();
+        registerOpId();
     }
 
     V8Scope::~V8Scope() {
-        unregisterOpSpec();
+        unregisterOpId();
         {
             V8_SIMPLE_HEADER
             v8::Locker::StopPreemption();
@@ -1024,11 +1019,11 @@ namespace mongo {
 
     void V8Scope::reset() {
         V8_SIMPLE_HEADER
-        unregisterOpSpec();
+        unregisterOpId();
         _error = "";
         _pendingKill = false;
-        _inNativeCallback = true;
-        registerOpSpec();
+        _inNativeExecution = true;
+        registerOpId();
     }
 
     Local< v8::Value > newFunction( const char *code ) {

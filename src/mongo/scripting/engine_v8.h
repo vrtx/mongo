@@ -31,10 +31,11 @@ using namespace v8;
  * that work with v8 handles (and/or must be within the V8Scope's isolate
  * and context.
  */
-#define V8_SIMPLE_HEADER v8::Locker v8lock(_isolate);         \
-                         v8::Isolate::Scope iscope(_isolate); \
-                         HandleScope handle_scope;            \
-                         Context::Scope context_scope(_context);
+#define V8_SIMPLE_HEADER                                                                         \
+        v8::Locker v8lock(_isolate);          /* acquire isolate lock */                         \
+        v8::Isolate::Scope iscope(_isolate);  /* enter the isolate and exit when out of scope */ \
+        HandleScope handle_scope;             /* make the current scope own local handles */     \
+        Context::Scope context_scope(_context); /* enter the context and exit when out of scope */
 
 namespace mongo {
 
@@ -70,7 +71,7 @@ namespace mongo {
      *
      * NB:
      *   - v8 objects/handles/etc. cannot be shared between V8Scopes
-     *   - in mongod, each scope is associated with an opSpec (for KillOp support)
+     *   - in mongod, each scope is associated with an opId (for KillOp support)
      *   - any public functions that call the v8 API should have a V8_SIMPLE_HEADER
      */
     class V8Scope : public Scope {
@@ -278,12 +279,12 @@ namespace mongo {
          * context of a mongo operation (e.g. from the shell), killOp will not
          * be supported.
          */
-        void registerOpSpec();
+        void registerOpId();
 
         /**
          * Unregister this scope with the mongo op id.
          */
-        void unregisterOpSpec();
+        void unregisterOpId();
 
         V8ScriptEngine * _engine;
 
@@ -306,28 +307,17 @@ namespace mongo {
         v8::Isolate* _isolate;
 
         mongo::mutex _interruptLock; // protects interruption-related flags
-        bool _inNativeCallback;      // protected by _interruptLock
+        bool _inNativeExecution;     // protected by _interruptLock
         bool _pendingKill;           // protected by _interruptLock
-        int _opSpec;                 // op id for this scipe
+        int _opId;                   // op id for this scope
     };
 
     class V8ScriptEngine : public ScriptEngine {
     public:
         V8ScriptEngine();
         virtual ~V8ScriptEngine();
-
         virtual Scope * createScope() { return new V8Scope( this ); }
-        virtual Scope * newScope() {
-            Scope *s = createScope();
-            if (!s)
-                return NULL;
-            if (_scopeInitCallback)
-                _scopeInitCallback( *s );
-            installGlobalUtils( *s );
-            return s;
-        }
         virtual void runTest() {}
-
         bool utf8Ok() const { return true; }
 
         /**
@@ -338,7 +328,7 @@ namespace mongo {
          * The scope will be removed from the map upon destruction, and the op id
          * will be updated if the scope is ever reused from a pool.
          */
-        virtual void interrupt( unsigned opSpec );
+        virtual void interrupt(unsigned opId);
 
         /**
          * Interrupt all v8 contexts (and isolates).  @see interrupt().
@@ -351,9 +341,9 @@ namespace mongo {
         std::string printKnownOps_inlock();
 
         typedef map<unsigned, V8Scope*> OpIdToScopeMap;
+        mongo::mutex _globalInterruptLock;  // protects map of all operation ids -> scope
         OpIdToScopeMap _opToScopeMap;       // map of mongo op ids to scopes (protected by
                                             // _globalInterruptLock).
-        mongo::mutex _globalInterruptLock;  // protects map of all operation ids -> scope
     };
 
     extern ScriptEngine * globalScriptEngine;
