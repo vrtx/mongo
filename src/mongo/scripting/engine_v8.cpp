@@ -441,6 +441,7 @@ namespace mongo {
     V8Scope::V8Scope( V8ScriptEngine * engine )
         : _engine(engine),
           _connectState(NOT),
+          _profiler(),
           _interruptLock("ScopeInterruptLock"),
           _inNativeExecution(true),
           _pendingKill(false) {
@@ -524,6 +525,9 @@ namespace mongo {
         injectV8Function("version", Version);
         injectV8Function("load", load);
         injectV8Function("gc", GCV8);
+        injectV8Function("startProfiler", startProfiler);
+        injectV8Function("stopProfiler", stopProfiler);
+        injectV8Function("getProfile", getProfile);
 
         installDBTypes(this, _global);
 
@@ -1731,6 +1735,31 @@ namespace mongo {
         v8::V8::LowMemoryNotification();
         return v8::Undefined();
     }
+
+
+    Handle<v8::Value> V8Scope::startProfiler(V8Scope* scope, const Arguments& args) {
+        if (args.Length() != 1 || !args[0]->IsString()) {
+            return v8::ThrowException(v8::String::New("startProfiler takes exactly 1 string argument"));
+        }
+        scope->_profiler.start(*v8::String::Utf8Value(args[0]->ToString()));
+        return v8::Undefined();
+    }
+
+    Handle<v8::Value> V8Scope::stopProfiler(V8Scope* scope, const Arguments& args) {
+        if (args.Length() != 1 || !args[0]->IsString()) {
+            return v8::ThrowException(v8::String::New("stopProfiler takes exactly 1 string argument"));
+        }
+        scope->_profiler.stop(*v8::String::Utf8Value(args[0]->ToString()));
+        return v8::Undefined();
+    }
+
+    Handle<v8::Value> V8Scope::getProfile(V8Scope* scope, const Arguments& args) {
+        if (args.Length() != 1 || !args[0]->IsString()) {
+            return v8::ThrowException(v8::String::New("getProfile takes exactly 1 string argument"));
+        }
+        return scope->mongoToLZV8(scope->_profiler.display(*v8::String::Utf8Value(args[0]->ToString())));
+    }
+
 
     /**
      * Gets a V8 strings from the scope's cache, creating one if needed

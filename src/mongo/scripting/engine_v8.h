@@ -21,8 +21,7 @@
 #include <vector>
 
 #include "mongo/scripting/engine.h"
-
-#include "mongo/base/disallow_copying.h"
+#include "mongo/scripting/v8_profiler.h"
 
 using namespace v8;
 
@@ -264,6 +263,10 @@ namespace mongo {
         static Handle<Value> Version(V8Scope* scope, const v8::Arguments& args);
         static Handle<Value> GCV8(V8Scope* scope, const v8::Arguments& args);
 
+        static Handle<Value> startProfiler(V8Scope* scope, const v8::Arguments& args);
+        static Handle<Value> stopProfiler(V8Scope* scope, const v8::Arguments& args);
+        static Handle<Value> getProfile(V8Scope* scope, const v8::Arguments& args);
+
         /** Signal that this scope has entered a native (C++) execution context.
          *  @return  false if execution has been interrupted
          */
@@ -305,6 +308,7 @@ namespace mongo {
         Persistent<v8::ObjectTemplate> internalFieldObjects;
 
         v8::Isolate* _isolate;
+        V8Profiler _profiler;
 
         mongo::mutex _interruptLock; // protects interruption-related flags
         bool _inNativeExecution;     // protected by _interruptLock
