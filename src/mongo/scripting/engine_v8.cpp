@@ -520,6 +520,9 @@ namespace mongo {
         internalFieldObjects->SetInternalFieldCount(1);
 
         injectV8Function("print", Print);
+        injectV8Function("curTimeMicros", curTimeMicros);
+        injectV8Function("getThreadId", getThreadId);
+        injectV8Function("microSleep", microSleep);
         injectV8Function("version", Version);
         injectV8Function("load", load);
         injectV8Function("gc", GCV8);
@@ -1635,6 +1638,21 @@ namespace mongo {
 
     v8::Function * V8Scope::getObjectIdCons() {
         return getNamedCons("ObjectId");
+    }
+
+    v8::Handle<v8::Value> V8Scope::getThreadId(V8Scope* scope, const v8::Arguments& args) {
+        return v8::Number::New(v8::V8::GetCurrentThreadId());
+    }
+
+    v8::Handle<v8::Value> V8Scope::microSleep(V8Scope* scope, const v8::Arguments& args) {
+        if (!*args[0] || !args[0]->IsNumber())
+            return v8::ThrowException(v8::String::New("number argument required"));
+        sleepmicros(args[0]->ToNumber()->Value());
+        return v8::Undefined();
+    }
+
+    v8::Handle<v8::Value> V8Scope::curTimeMicros(V8Scope* scope, const v8::Arguments& args) {
+        return v8::Number::New(curTimeMicros64());
     }
 
     v8::Handle<v8::Value> V8Scope::Print(V8Scope* scope, const v8::Arguments& args) {

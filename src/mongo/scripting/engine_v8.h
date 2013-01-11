@@ -273,6 +273,9 @@ namespace mongo {
          * v8-specific implementations of basic global functions
          */
         static v8::Handle<v8::Value> load(V8Scope* scope, const v8::Arguments& args);
+        static v8::Handle<v8::Value> getThreadId(V8Scope* scope, const v8::Arguments& args);
+        static v8::Handle<v8::Value> microSleep(V8Scope* scope, const v8::Arguments& args);
+        static v8::Handle<v8::Value> curTimeMicros(V8Scope* scope, const v8::Arguments& args);
         static v8::Handle<v8::Value> Print(V8Scope* scope, const v8::Arguments& args);
         static v8::Handle<v8::Value> Version(V8Scope* scope, const v8::Arguments& args);
         static v8::Handle<v8::Value> GCV8(V8Scope* scope, const v8::Arguments& args);
