@@ -327,7 +327,7 @@ namespace mongo {
         v8::Persistent<v8::ObjectTemplate> internalFieldObjects;
 
         v8::Isolate* _isolate;
-        V8Profiler _profiler;
+        V8CpuProfiler _cpuProfiler;
 
         mongo::mutex _interruptLock; // protects interruption-related flags
         bool _inNativeExecution;     // protected by _interruptLock
