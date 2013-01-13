@@ -28,7 +28,10 @@ namespace mongo {
                        const BSONObj &query, const vector<QueryGeometry> &fields,
                        const S2IndexingParams &params, int numWanted, double maxDistance)
         : _details(details), _fields(fields), _params(params), _nscanned(0),
-          _keyPattern(keyPattern), _numToReturn(numWanted), _maxDistance(maxDistance) {
+          _keyPattern(keyPattern), _numToReturn(numWanted),
+          // _outerRadius can't be greater than (pi * r) or we wrap around the opposite
+          // side of the world.
+          _maxDistance(min(M_PI * _params.radius, maxDistance)) {
         BSONObjBuilder geoFieldsToNuke;
         for (size_t i = 0; i < _fields.size(); ++i) {
             geoFieldsToNuke.append(_fields[i].field, "");
@@ -51,6 +54,10 @@ namespace mongo {
         // Start with a conservative _radiusIncrement.
         _radiusIncrement = S2::kAvgEdge.GetValue(_params.finestIndexedLevel) * _params.radius;
         _innerRadius = _outerRadius = 0;
+        // We might want to adjust the sizes of our coverings if our search
+        // isn't local to the start point.
+        _finestLevel = _params.finestIndexedLevel;
+        _coarsestLevel = _params.coarsestIndexedLevel;
         // Set up _outerRadius with proper checks (maybe maxDistance is really small?)
         nextAnnulus();
     }
@@ -95,10 +102,7 @@ namespace mongo {
     void S2NearCursor::nextAnnulus() {
         _innerRadius = _outerRadius;
         _outerRadius += _radiusIncrement;
-        // Don't look farther than we're supposed to.
         _outerRadius = min(_outerRadius, _maxDistance);
-        // _outerRadius can't be greater than this or we wrap around the opposite side of the world.
-        _outerRadius = min(_outerRadius, M_PI * _params.radius);
         verify(_innerRadius <= _outerRadius);
     }
 
@@ -129,7 +133,6 @@ namespace mongo {
         frsObjBuilder.appendElements(_filteredQuery);
 
         S2RegionCoverer coverer;
-        _params.configureCoverer(&coverer);
         // Step 1: Make the monstrous BSONObj that describes what keys we want.
         for (size_t i = 0; i < _fields.size(); ++i) {
             const QueryGeometry &field = _fields[i];
@@ -145,7 +148,11 @@ namespace mongo {
             regions.push_back(&invInnerCap);
             regions.push_back(&outerCap);
             S2RegionIntersection shell(&regions);
-            inExpr = S2SearchUtil::coverAsBSON(&coverer, shell, field.field);
+            vector<S2CellId> cover;
+            coverer.set_min_level(_coarsestLevel);
+            coverer.set_max_level(_finestLevel);
+            coverer.GetCovering(shell, &cover);
+            inExpr = S2SearchUtil::coverAsBSON(cover, field.field, _params.coarsestIndexedLevel);
             // Shell takes ownership of the regions we push in, but they're local variables and
             // deleting them would be bad.
             shell.Release(NULL);
@@ -164,16 +171,46 @@ namespace mongo {
 
         // We iterate until 1. our search radius is too big or 2. we find results.
         do {
+            // We want the size of our coverings to be proportional to the size of the annulus
+            // we're looking at, otherwise we may generate a covering set that is enormous.
+            //
+            // This penalizes users who start their searches far away from
+            // dense pockets of data and then encounter those dense pockets,
+            // but hey, you can't make every distribution of data work well.
+            S1Angle innerAngle = S1Angle::Radians(_innerRadius / _params.radius);
+            S1Angle outerAngle = S1Angle::Radians(_outerRadius / _params.radius);
+            S1Angle diff = outerAngle - innerAngle;
+            _coarsestLevel = S2::kAvgEdge.GetClosestLevel(diff.radians());
+            _finestLevel = _coarsestLevel + 1;
+
             // Some of these arguments are opaque, look at the definitions of the involved classes.
             FieldRangeSet frs(_details->parentNS().c_str(), makeFRSObject(), false, false);
             shared_ptr<FieldRangeVector> frv(new FieldRangeVector(frs, _specForFRV, 1));
             scoped_ptr<BtreeCursor> cursor(BtreeCursor::make(nsdetails(_details->parentNS()),
                                                              *_details, frv, 0, 1));
 
+            // The cursor may return the same obj more than once for a given
+            // FRS, so we make sure to only consider it once in any given annulus.
+            //
+            // We don't want this outside of the 'do' loop because the covering
+            // for an annulus may return an object whose distance to the query
+            // point is actually contained in a subsequent annulus.  If we
+            // didn't consider every object in a given annulus we might miss
+            // the point.
+            //
+            // We don't use a global 'seen' because we get that by requiring
+            // the distance from the query point to the indexed geo to be
+            // within our 'current' annulus, and I want to dodge all yield
+            // issues if possible.
+            set<DiskLoc> seen;
+
             // Do the actual search through this annulus.
             size_t considered = 0;
             for (; cursor->ok(); cursor->advance()) {
                 ++considered;
+
+                if (seen.end() != seen.find(cursor->currLoc())) { continue; }
+                seen.insert(cursor->currLoc());
 
                 MatchDetails details;
                 bool matched = _matcher->matchesCurrent(cursor.get(), &details);
@@ -222,9 +259,7 @@ namespace mongo {
             }
         } while (_results.empty()
                  && _innerRadius < _maxDistance
-                 && _innerRadius < _outerRadius
-                 && _innerRadius < M_PI  * _params.radius);
-        // TODO: consider shrinking _radiusIncrement if _results.size() meets some criteria.
+                 && _innerRadius < _outerRadius);
     }
 
     double S2NearCursor::distanceBetween(const QueryGeometry &field, const BSONObj &obj) {

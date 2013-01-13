@@ -21,9 +21,9 @@
 
 #include "mongo/client/connpool.h"
 #include "mongo/s/field_parser.h"
+#include "mongo/s/type_changelog.h"
 #include "mongo/s/type_mongos.h"
 #include "mongo/s/type_shard.h"
-#include "mongo/s/type_changelog.h"
 #include "mongo/util/stringutils.h"
 
 namespace mongo {
@@ -67,16 +67,18 @@ namespace mongo {
 
                 Date_t lastPing = ping.getPing();
 
-                long long quietIntervalMillis = static_cast<long long>(lastPing - jsTime());
-                long long quietIntervalSecs = quietIntervalMillis / 1000;
-                long long quietIntervalMins = quietIntervalSecs / 60;
+                long long quietIntervalMillis = 0;
+                if ((jsTime() - lastPing) >= 0) {
+                    quietIntervalMillis = static_cast<long long>(jsTime() - lastPing);
+                }
+                long long quietIntervalMins = quietIntervalMillis / (60 * 1000);
 
                 // We assume that anything that hasn't pinged in 5 minutes is probably down
                 if (quietIntervalMins >= 5) {
                     log() << "stale mongos detected " << quietIntervalMins << " minutes ago,"
                           << " network location is " << pingDoc["_id"].String()
-                          << ", not checking version";
-                }
+                          << ", not checking version" << endl;
+	}
                 else {
                     if (versionCmp(mongoVersion, minMongoVersion) < 0) {
                         return Status(ErrorCodes::RemoteValidationError,
@@ -297,7 +299,9 @@ namespace mongo {
                            const BSONObj& details)
     {
         //
-        // Duplicated here to avoid dependency issues
+        // The code for writing to the changelog collection exists elsewhere - we duplicate here to
+        // avoid dependency issues.
+        // TODO: Merge again once config.cpp is cleaned up.
         //
 
         string changeID = stream() << getHostNameCached() << "-" << terseCurrentTime() << "-"

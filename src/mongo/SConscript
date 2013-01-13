@@ -16,6 +16,7 @@ Import("darwin windows solaris linux nix")
 
 env.SConscript(['base/SConscript',
                 'db/auth/SConscript',
+                'db/fts/SConscript',
                 'db/ops/SConscript',
                 'platform/SConscript',
                 's/SConscript',
@@ -261,6 +262,7 @@ env.StaticLibrary("coredb", [
         "db/projection.cpp",
         "db/querypattern.cpp",
         "db/queryutil.cpp",
+        "db/stats/timer_stats.cpp",
         "db/stats/top.cpp",
         "s/shardconnection.cpp",
         ],
@@ -430,6 +432,8 @@ env.CppUnitTest('cmdline_test', 'db/cmdline_test.cpp', LIBDEPS=['dbcmdline'])
 
 env.CppUnitTest('diskloc_test', 'db/diskloc_test.cpp', LIBDEPS=[])
 
+env.CppUnitTest('v8_deadline_monitor_test', 'scripting/v8_deadline_monitor_test.cpp', LIBDEPS=[])
+
 env.Library('stacktrace', 'util/stacktrace.cpp')
 
 env.Program('lame_stacktrace_test', 'util/lame_stacktrace_test.cpp',
@@ -465,7 +469,11 @@ mongosLibraryFiles = [
     "s/version_manager.cpp",
     ]
 
-env.Library( "mongoscore" , mongosLibraryFiles, LIBDEPS=['db/auth/authmongos'] )
+env.Library( "mongoscore",
+             mongosLibraryFiles,
+             LIBDEPS=['db/auth/authmongos',
+                      'db/fts/ftsmongos'
+                      ] )
 
 env.CppUnitTest( "balancer_policy_test" , [ "s/balancer_policy_tests.cpp" ] ,
                  LIBDEPS=["mongoscore", "coreshard", "mongocommon","coreserver","coredb","dbcmdline","mongodandmongos"] ,
@@ -533,6 +541,8 @@ env.CppUnitTest("geoparser_test", [ "db/geo/geoparser_test.cpp" ], LIBDEPS = ["g
 env.StaticLibrary("serveronly", serverOnlyFiles,
                   LIBDEPS=["coreshard",
                            "db/auth/authmongod",
+                           "db/fts/ftsmongod",
+                           "db/ops/update",
                            "dbcmdline",
                            "defaultversion",
                            "geoparser",

@@ -1142,8 +1142,8 @@ jsTestOptions = function(){
                               keyFile : TestData.keyFile,
                               authUser : "__system",
                               authPassword : TestData.keyFileData,
-                              adminUser : "admin",
-                              adminPassword : "password" });
+                              adminUser : TestData.adminUser || "admin",
+                              adminPassword : TestData.adminPassword || "password" });
     }
     return _jsTestOptions;
 }
@@ -1202,14 +1202,19 @@ jsTest.authenticate = function(conn) {
     }
 
     try {
-        jsTest.attempt({timeout:5000, sleepTime:1000},
+        jsTest.attempt({timeout:5000, sleepTime:1000, desc: "Authenticating connection: " + conn},
                        function() {
                            // Set authenticated to stop an infinite recursion from getDB calling
                            // back into authenticate.
                            conn.authenticated = true;
-                           print ("Authenticating to admin user on connection: " + conn);
-                           conn.authenticated = conn.getDB('admin').auth(
-                               jsTestOptions().adminUser, jsTestOptions().adminPassword);
+                           print ("Authenticating to admin database as " +
+                                  jsTestOptions().adminUser + " with mechanism " +
+                                  DB.prototype._defaultAuthenticationMechanism +
+                                  " on connection: " + conn);
+                           conn.authenticated = conn.getDB('admin').auth({
+                               user: jsTestOptions().adminUser,
+                               pwd: jsTestOptions().adminPassword
+                           });
                            return conn.authenticated;
                        });
     } catch (e) {
@@ -1574,6 +1579,18 @@ shellHelper.show = function (what) {
         return ""
     }
 
+    if (what == "startupWarnings" ) {
+        if ( db ) {
+            var res = db.adminCommand( { getLog : "startupWarnings" } );
+            if ( res.ok ) {
+                print( "Server has startup warnings: " );
+                for ( var i=0; i<res.log.length; i++){
+                    print( res.log[i] )
+                }
+                return "";
+            }
+        }
+    }
 
     throw "don't know how to show [" + what + "]";
 
@@ -1677,7 +1694,14 @@ Random.setRandomSeed = function( s ) {
 
 // generate a random value from the exponential distribution with the specified mean
 Random.genExp = function( mean ) {
-    return -Math.log( Random.rand() ) * mean;
+    var r = Random.rand();
+    if ( r == 0 ) {
+        r = Random.rand();
+        if ( r == 0 ) {
+            r = 0.000001;
+        }
+    }
+    return -Math.log( r ) * mean;
 }
 
 Geo = {};

@@ -50,6 +50,8 @@
 #include "mongo/db/queryoptimizer.h"
 #include "mongo/db/repl.h"
 #include "mongo/db/repl_block.h"
+#include "mongo/db/repl/rs.h"
+#include "mongo/db/repl/rs_config.h"
 #include "mongo/s/chunk.h"
 #include "mongo/s/chunk_version.h"
 #include "mongo/s/config.h"
@@ -66,21 +68,27 @@ using namespace std;
 
 namespace mongo {
 
-    BSONObj findShardKeyIndexPattern_locked( const string& ns , const BSONObj& shardKeyPattern ) {
+    bool findShardKeyIndexPattern_locked( const string& ns,
+                                          const BSONObj& shardKeyPattern,
+                                          BSONObj* indexPattern ) {
         verify( Lock::isLocked() );
         NamespaceDetails* nsd = nsdetails( ns );
-        verify( nsd );
+        if ( !nsd )
+            return false;
         const IndexDetails* idx = nsd->findIndexByPrefix( shardKeyPattern , true );  /* require single key */
-        verify( idx );
-        return idx->keyPattern().getOwned();
+        if ( !idx )
+            return false;
+        *indexPattern = idx->keyPattern().getOwned();
+        return true;
     }
 
-
-    BSONObj findShardKeyIndexPattern_unlocked( const string& ns , const BSONObj& shardKeyPattern ) {
+    bool findShardKeyIndexPattern_unlocked( const string& ns,
+                                            const BSONObj& shardKeyPattern,
+                                            BSONObj* indexPattern ) {
         Client::ReadContext context( ns );
-        return findShardKeyIndexPattern_locked( ns , shardKeyPattern ).getOwned();
+        return findShardKeyIndexPattern_locked( ns, shardKeyPattern, indexPattern );
     }
-    
+
     Tee* migrateLog = new RamLog( "migrate" );
 
     class MoveTimingHelper {
@@ -195,7 +203,7 @@ namespace mongo {
         string toString() const {
             return str::stream() << ns << " from " << min << " -> " << max;
         }
-        
+
         void doRemove() {
             ShardForceVersionOkModeBlock sf;
             {
@@ -203,21 +211,27 @@ namespace mongo {
 
                 log() << "moveChunk starting delete for: " << this->toString() << migrateLog;
 
+                BSONObj indexKeyPattern;
+                if ( !findShardKeyIndexPattern_unlocked( ns, shardKeyPattern, &indexKeyPattern ) ) {
+                    warning() << "collection or index dropped before data could be cleaned" << endl;
+                    return;
+                }
+
                 long long numDeleted =
-                        Helpers::removeRange( ns ,
-                                              min ,
-                                              max ,
-                                              findShardKeyIndexPattern_unlocked( ns , shardKeyPattern ) , 
-                                              false , /*maxInclusive*/
-                                              secondaryThrottle ,
-                                              cmdLine.moveParanoia ? &rs : 0 , /*callback*/
-                                              true ); /*fromMigrate*/
+                        Helpers::removeRange( ns,
+                                              min,
+                                              max,
+                                              indexKeyPattern,
+                                              false, /*maxInclusive*/
+                                              secondaryThrottle,
+                                              cmdLine.moveParanoia ? &rs : 0, /*callback*/
+                                              true, /*fromMigrate*/
+                                              true ); /*onlyRemoveOrphans*/ 
 
                 log() << "moveChunk deleted " << numDeleted << " documents for "
                       << this->toString() << migrateLog;
             }
-            
-            
+
             ReplTime lastOpApplied = cc().getLastOp().asDate();
             Timer t;
             for ( int i=0; i<3600; i++ ) {
@@ -465,8 +479,9 @@ namespace mongo {
                 return false;
             }
             // Assume both min and max non-empty, append MinKey's to make them fit chosen index
-            BSONObj min = Helpers::modifiedRangeBound( _min , idx->keyPattern() , -1 );
-            BSONObj max = Helpers::modifiedRangeBound( _max , idx->keyPattern() , -1 );
+            KeyPattern kp( idx->keyPattern() );
+            BSONObj min = Helpers::toKeyFormat( kp.extendRangeBound( _min, false ) );
+            BSONObj max = Helpers::toKeyFormat( kp.extendRangeBound( _max, false ) );
 
             BtreeCursor* btreeCursor = BtreeCursor::make( d , *idx , min , max , false , 1 );
             auto_ptr<ClientCursor> cc(
@@ -877,12 +892,27 @@ namespace mongo {
             if( cmdObj["toShard"].type() == String ){
                 to = cmdObj["toShard"].String();
             }
-            
-            // if we do a w=2 after very write
+
+            // if we do a w=2 after every write
             bool secondaryThrottle = cmdObj["secondaryThrottle"].trueValue();
-            if ( secondaryThrottle && ! anyReplEnabled() ) {
-                secondaryThrottle = false;
-                warning() << "secondaryThrottle selected but no replication" << endl;
+            if ( secondaryThrottle ) {
+                if ( theReplSet ) {
+                    if ( theReplSet->config().getMajority() <= 1 ) {
+                        secondaryThrottle = false;
+                        warning() << "not enough nodes in set to use secondaryThrottle: "
+                                  << " majority: " << theReplSet->config().getMajority()
+                                  << endl;
+                    }
+                }
+                else if ( !anyReplEnabled() ) {
+                    secondaryThrottle = false;
+                    warning() << "secondaryThrottle selected but no replication" << endl;
+                }
+                else {
+                    // master/slave
+                    secondaryThrottle = false;
+                    warning() << "secondaryThrottle not allowed with master/slave" << endl;
+                }
             }
 
             // Do inline deletion
@@ -1521,6 +1551,10 @@ namespace mongo {
             
             slaveCount = ( getSlaveCount() / 2 ) + 1;
 
+            log() << "starting receiving-end of migration of chunk " << min << " -> " << max <<
+                    " for collection " << ns << " from " << from <<
+                    " (" << getSlaveCount() << " slaves detected)" << endl;
+
             string errmsg;
             MoveTimingHelper timing( "to" , ns , min , max , 5 /* steps */ , errmsg );
 
@@ -1568,15 +1602,24 @@ namespace mongo {
             }
 
             {
+
+                BSONObj indexKeyPattern;
+                if ( !findShardKeyIndexPattern_unlocked( ns, shardKeyPattern, &indexKeyPattern ) ) {
+                    errmsg = "collection or index dropped during migrate";
+                    warning() << errmsg << endl;
+                    state = FAIL;
+                    return;
+                }
+
                 // 2. delete any data already in range
                 RemoveSaver rs( "moveChunk" , ns , "preCleanup" );
-                long long num = Helpers::removeRange( ns ,
-                                                      min ,
-                                                      max ,
-                                                      findShardKeyIndexPattern_unlocked( ns , shardKeyPattern ) , 
-                                                      false , /*maxInclusive*/
-                                                      secondaryThrottle , /* secondaryThrottle */
-                                                      cmdLine.moveParanoia ? &rs : 0 , /*callback*/
+                long long num = Helpers::removeRange( ns,
+                                                      min,
+                                                      max,
+                                                      indexKeyPattern,
+                                                      false, /*maxInclusive*/
+                                                      secondaryThrottle, /* secondaryThrottle */
+                                                      cmdLine.moveParanoia ? &rs : 0, /*callback*/
                                                       true ); /* flag fromMigrate in oplog */
                 if ( num )
                     warning() << "moveChunkCmd deleted data already in chunk # objects: " << num << migrateLog;
@@ -1796,8 +1839,7 @@ namespace mongo {
 
                     // id object most likely has form { _id : ObjectId(...) }
                     // infer from that correct index to use, e.g. { _id : 1 }
-                    BSONObj idIndexPattern;
-                    Helpers::toKeyFormat( id , idIndexPattern );
+                    BSONObj idIndexPattern = Helpers::inferKeyPattern( id );
 
                     // TODO: create a better interface to remove objects directly
                     Helpers::removeRange( ns ,
@@ -1979,9 +2021,8 @@ namespace mongo {
                 // shardKeyPattern may not be provided if another shard is from pre 2.2
                 // In that case, assume the shard key pattern is the same as the range
                 // specifiers provided.
-                BSONObj keya , keyb;
-                Helpers::toKeyFormat( migrateStatus.min , keya );
-                Helpers::toKeyFormat( migrateStatus.max , keyb );
+                BSONObj keya = Helpers::inferKeyPattern( migrateStatus.min );
+                BSONObj keyb = Helpers::inferKeyPattern( migrateStatus.max );
                 verify( keya == keyb );
 
                 warning() << "No shard key pattern provided by source shard for migration."

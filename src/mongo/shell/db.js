@@ -1,6 +1,10 @@
 // db.js
 
-if ( typeof DB == "undefined" ){                     
+var DB;
+
+(function() {
+
+if (DB === undefined) {
     DB = function( mongo , name ){
         this._mongo = mongo;
         this._name = name;
@@ -59,19 +63,10 @@ DB.prototype.adminCommand = function( obj ){
 
 DB.prototype._adminCommand = DB.prototype.adminCommand; // alias old name
 
-DB.prototype.addUser = function( username , pass, readOnly, replicatedTo, timeout ){
-    if ( pass == null || pass.length == 0 )
-        throw "password can't be empty";
-
-    readOnly = readOnly || false;
+DB.prototype._createUser = function(userObj, replicatedTo, timeout) {
     var c = this.getCollection( "system.users" );
-    
-    var u = c.findOne( { user : username } ) || { user : username };
-    u.readOnly = readOnly;
-    u.pwd = hex_md5( username + ":mongo:" + pass );
-
     try {
-        c.save( u );
+        c.save(userObj);
     } catch (e) {
         // SyncClusterConnections call GLE automatically after every write and will throw an
         // exception if the insert failed.
@@ -83,7 +78,7 @@ DB.prototype.addUser = function( username , pass, readOnly, replicatedTo, timeou
             throw "Could not insert into system.users: " + tojson(e);
         }
     }
-    print( tojson( u ) );
+    print(tojson(userObj));
 
     //
     // When saving users to replica sets, the shell user will want to know if the user hasn't
@@ -108,26 +103,88 @@ DB.prototype.addUser = function( username , pass, readOnly, replicatedTo, timeou
         }
         print( "could not find getLastError object : " + tojson( e ) )
     }
-    
+
+    if (!le.err) {
+        return;
+    }
+
     // We can't detect replica set shards via mongos, so we'll sometimes get this error
     // In this case though, we've already checked the local error before returning norepl, so
     // the user has been written and we're happy
-    if( le.err == "norepl" ){
-        return
-    }
-
-    if ( le.err == "timeout" ){
-        throw "timed out while waiting for user authentication to replicate - " +
-              "database will not be fully secured until replication finishes"
-    }
-
-    if ( le.err == "noreplset" ){
+    if (le.err == "norepl" || le.err == "noreplset") {
         // nothing we can do
         return;
     }
 
-    if ( le.err )
-        throw "couldn't add user: " + le.err
+    if (le.err == "timeout") {
+        throw "timed out while waiting for user authentication to replicate - " +
+              "database will not be fully secured until replication finishes"
+    }
+
+    if (le.err.startsWith("E11000 duplicate key error")) {
+        throw "User already exists with that username/userSource combination";
+    }
+
+    throw "couldn't add user: " + le.err;
+}
+
+function _hashPassword(username, password) {
+    return hex_md5(username + ":mongo:" + password);
+}
+
+// For adding old-style user documents for backwards compatibily with pre-2.4 versions of MongoDB.
+DB.prototype._addUserV22 = function( username , pass, readOnly, replicatedTo, timeout ) {
+    if ( pass == null || pass.length == 0 )
+        throw "password can't be empty";
+
+    readOnly = readOnly || false;
+    var c = this.getCollection( "system.users" );
+    var u = c.findOne({user : username, userSource:null}) || { user : username };
+    u.readOnly = readOnly;
+    u.pwd = _hashPassword(username, pass);
+
+    this._createUser(u, replicatedTo, timeout);
+}
+
+DB.prototype._addUser = function(userObj, replicatedTo, timeout) {
+    var roles = userObj['roles'];
+    var oldPwd;
+
+    // To prevent creating old-style privilege documents
+    if (roles == null) {
+        throw Error("'roles' field must be provided");
+    }
+
+    if (userObj.pwd != null) {
+        oldPwd = userObj.pwd;
+        userObj.pwd = _hashPassword(userObj.user, userObj.pwd);
+    }
+    try {
+        this._createUser(userObj, replicatedTo, timeout);
+    } finally {
+        if (userObj.pwd != null)
+            userObj.pwd = oldPwd;
+    }
+}
+
+DB.prototype.addUser = function() {
+    if (arguments.length == 0) {
+        throw Error("No arguments provided to addUser");
+    }
+    if (typeof arguments[0] == "object") {
+        this._addUser.apply(this, arguments);
+    } else {
+        this._addUserV22.apply(this, arguments);
+    }
+}
+
+DB.prototype.changeUserPassword = function(username, password) {
+    var hashedPassword = _hashPassword(username, password);
+    db.system.users.update({user : username, userSource : null}, {$set : {pwd : hashedPassword}});
+    var err = db.getLastError();
+    if (err) {
+        throw "Changing password failed: " + err;
+    }
 }
 
 DB.prototype.logout = function(){
@@ -139,8 +196,10 @@ DB.prototype.removeUser = function( username ){
 }
 
 DB.prototype.__pwHash = function( nonce, username, pass ) {
-    return hex_md5( nonce + username + hex_md5( username + ":mongo:" + pass ) );
+    return hex_md5(nonce + username + _hashPassword(username, pass));
 }
+
+DB.prototype._defaultAuthenticationMechanism = "MONGO-CR";
 
 DB.prototype._authOrThrow = function () {
     var params;
@@ -158,7 +217,7 @@ DB.prototype._authOrThrow = function () {
     }
 
     if (params.mechanism === undefined)
-        params.mechanism = "MONGO-CR";
+        params.mechanism = this._defaultAuthenticationMechanism;
 
     if (params.mechanism == "MONGO-CR") {
         this.getMongo().auth(this.getName(), params.user, params.pwd);
@@ -427,13 +486,24 @@ DB.prototype.help = function() {
     return __magicNoPrint;
 }
 
-DB.prototype.printCollectionStats = function(scale){
-
-    /* no error checking on scale, done in stats already */
-
+DB.prototype.printCollectionStats = function(scale) { 
+    if (arguments.length > 1) { 
+        print("printCollectionStats() has a single optional argument (scale)");
+        return;
+    }
+    if (typeof scale != 'undefined') {
+        if(typeof scale != 'number') {
+            print("scale has to be a number >= 1");
+            return;
+        }
+        if (scale < 1) {
+            print("scale has to be >= 1");
+            return;
+        }
+    }
     var mydb = this;
     this.getCollectionNames().forEach(
-        function(z){
+        function(z) {
             print( z );
             printjson( mydb.getCollection(z).stats(scale) );
             print( "---" );
@@ -960,3 +1030,5 @@ DB.prototype.getSlaveOk = function() {
 DB.prototype.loadServerScripts = function(){
     this.system.js.find().forEach(function(u){eval(u._id + " = " + u.value);});
 }
+
+}());

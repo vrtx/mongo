@@ -25,6 +25,7 @@
 
 #include <time.h>
 
+#include "mongo/base/counter.h"
 #include "mongo/base/init.h"
 #include "mongo/base/status.h"
 #include "mongo/bson/util/builder.h"
@@ -35,6 +36,7 @@
 #include "mongo/db/background.h"
 #include "mongo/db/btreecursor.h"
 #include "mongo/db/commands.h"
+#include "mongo/db/commands/server_status.h"
 #include "mongo/db/db.h"
 #include "mongo/db/dur_stats.h"
 #include "mongo/db/index_update.h"
@@ -50,6 +52,7 @@
 #include "mongo/db/repl.h"
 #include "mongo/db/repl_block.h"
 #include "mongo/db/replutil.h"
+#include "mongo/db/stats/timer_stats.h"
 #include "mongo/s/d_writeback.h"
 #include "mongo/s/stale_exception.h"  // for SendStaleConfigException
 #include "mongo/scripting/engine.h"
@@ -97,6 +100,12 @@ namespace mongo {
        note: once non-null, never goes to null again.
     */
     BSONObj *getLastErrorDefault = 0;
+
+    static TimerStats gleWtimeStats;
+    static ServerStatusMetricField<TimerStats> displayGleLatency( "getLastError.wtime", &gleWtimeStats );
+
+    static Counter64 gleWtimeouts;
+    static ServerStatusMetricField<Counter64> gleWtimeoutsDisplay( "getLastError.wtimeouts", &gleWtimeouts );
 
     class CmdGetLastError : public Command {
     public:
@@ -185,7 +194,7 @@ namespace mongo {
                 }
 
                 int timeout = cmdObj["wtimeout"].numberInt();
-                Timer t;
+                TimerHolder timer( &gleWtimeStats );
 
                 long long passes = 0;
                 char buf[32];
@@ -232,10 +241,11 @@ namespace mongo {
                     }
 
 
-                    if ( timeout > 0 && t.millis() >= timeout ) {
+                    if ( timeout > 0 && timer.millis() >= timeout ) {
+                        gleWtimeouts.increment();
                         result.append( "wtimeout" , true );
                         errmsg = "timed out waiting for slaves";
-                        result.append( "waited" , t.millis() );
+                        result.append( "waited" , timer.millis() );
                         result.append("replicatedTo", getHostsReplicatedTo(op));
                         result.append( "err" , "timeout" );
                         return true;
@@ -248,12 +258,14 @@ namespace mongo {
                 }
 
                 result.append("replicatedTo", getHostsReplicatedTo(op));
-                result.appendNumber( "wtime" , t.millis() );
+                int myMillis = timer.recordMillis();
+                result.appendNumber( "wtime" , myMillis );
             }
 
             result.appendNull( "err" );
             return true;
         }
+
     } cmdGetLastError;
 
     class CmdGetPrevError : public Command {
@@ -378,12 +390,13 @@ namespace mongo {
                 return false;
             }
             BSONElement e = cmdObj.firstElement();
-            log() << "dropDatabase " << dbname << endl;
+            log() << "dropDatabase " << dbname << " starting" << endl;
             int p = (int) e.number();
             if ( p != 1 )
                 return false;
             dropDatabase(dbname);
             result.append( "dropped" , dbname );
+            log() << "dropDatabase " << dbname << " finished" << endl;
             return true;
         }
     } cmdDropDatabase;
@@ -1102,7 +1115,8 @@ namespace mongo {
             else {
 
                 if ( keyPattern.isEmpty() ){
-                    Helpers::toKeyFormat( min , keyPattern );
+                    // if keyPattern not provided, try to infer it from the fields in 'min'
+                    keyPattern = Helpers::inferKeyPattern( min );
                 }
 
                 const IndexDetails *idx = d->findIndexByPrefix( keyPattern ,
@@ -1112,8 +1126,9 @@ namespace mongo {
                     return false;
                 }
                 // If both min and max non-empty, append MinKey's to make them fit chosen index
-                min = Helpers::modifiedRangeBound( min , idx->keyPattern() , -1 );
-                max = Helpers::modifiedRangeBound( max , idx->keyPattern() , -1 );
+                KeyPattern kp( idx->keyPattern() );
+                min = Helpers::toKeyFormat( kp.extendRangeBound( min, false ) );
+                max = Helpers::toKeyFormat( kp.extendRangeBound( max, false ) );
 
                 c.reset( BtreeCursor::make( d, *idx, min, max, false, 1 ) );
             }
@@ -1216,12 +1231,12 @@ namespace mongo {
             if ( jsobj["scale"].isNumber() ) {
                 scale = jsobj["scale"].numberInt();
                 if ( scale <= 0 ) {
-                    errmsg = "scale has to be > 0";
+                    errmsg = "scale has to be >= 1";
                     return false;
                 }
             }
             else if ( jsobj["scale"].trueValue() ) {
-                errmsg = "scale has to be a number > 0";
+                errmsg = "scale has to be a number >= 1";
                 return false;
             }
 
@@ -1263,13 +1278,14 @@ namespace mongo {
     class CollectionModCommand : public Command {
     public:
         CollectionModCommand() : Command( "collMod" ){}
-        virtual bool slaveOk() const { return true; }
+        virtual bool slaveOk() const { return false; }
         virtual LockType locktype() const { return WRITE; }
         virtual bool logTheOp() { return true; }
         virtual void help( stringstream &help ) const {
             help << 
                 "Sets collection options.\n"
-                "Example: { collMod: 'foo', usePowerOf2Sizes:true }";
+                "Example: { collMod: 'foo', usePowerOf2Sizes:true }\n"
+                "Example: { collMod: 'foo', index: {keyPattern: {a: 1}, expireAfterSeconds: 600} }";
         }
         virtual void addRequiredPrivileges(const std::string& dbname,
                                            const BSONObj& cmdObj,
@@ -1286,23 +1302,76 @@ namespace mongo {
                 errmsg = "ns does not exist";
                 return false;
             }
-            
+
             bool ok = true;
-            int oldFlags = nsd->userFlags();
-            
-            BSONObjIterator i( jsobj );
-            while ( i.more() ) {
-                const BSONElement& e = i.next();
+
+            BSONForEach( e, jsobj ) {
                 if ( str::equals( "collMod", e.fieldName() ) ) {
                     // no-op
                 }
                 else if ( str::equals( "usePowerOf2Sizes", e.fieldName() ) ) {
-                    result.appendBool( "usePowerOf2Sizes_old" , nsd->isUserFlagSet( NamespaceDetails::Flag_UsePowerOf2Sizes ) );
-                    if ( e.trueValue() ) {
-                        nsd->setUserFlag( NamespaceDetails::Flag_UsePowerOf2Sizes );
+                    bool oldPowerOf2 = nsd->isUserFlagSet(NamespaceDetails::Flag_UsePowerOf2Sizes);
+                    bool newPowerOf2 = e.trueValue();
+
+                    if ( oldPowerOf2 != newPowerOf2 ) {
+                        // change userFlags
+                        result.appendBool( "usePowerOf2Sizes_old", oldPowerOf2 );
+
+                        newPowerOf2 ? nsd->setUserFlag( NamespaceDetails::Flag_UsePowerOf2Sizes ) :
+                                      nsd->clearUserFlag( NamespaceDetails::Flag_UsePowerOf2Sizes );
+                        nsd->syncUserFlags( ns ); // must keep system.namespaces up-to-date
+
+                        result.appendBool( "usePowerOf2Sizes_new", newPowerOf2 );
                     }
-                    else {
-                        nsd->clearUserFlag( NamespaceDetails::Flag_UsePowerOf2Sizes );
+                }
+                else if ( str::equals( "index", e.fieldName() ) ) {
+                    BSONObj indexObj = e.Obj();
+                    BSONObj keyPattern = indexObj.getObjectField( "keyPattern" );
+
+                    if ( keyPattern.isEmpty() ){
+                        errmsg = "no keyPattern specified";
+                        ok = false;
+                        continue;
+                    }
+
+                    BSONElement newExpireSecs = indexObj["expireAfterSeconds"];
+                    if ( newExpireSecs.eoo() ) {
+                        errmsg = "no expireAfterSeconds field";
+                        ok = false;
+                        continue;
+                    }
+                    if ( ! newExpireSecs.isNumber() ) {
+                        errmsg = "expireAfterSeconds field must be a number";
+                        ok = false;
+                        continue;
+                    }
+
+                    int idxNo = nsd->findIndexByKeyPattern( keyPattern );
+                    if( idxNo < 0 ){
+                        errmsg = str::stream() << "cannot find index " << keyPattern
+                                               << " for ns " << ns;
+                        ok = false;
+                        continue;
+                    }
+
+                    IndexDetails idx = nsd->idx( idxNo );
+                    BSONElement oldExpireSecs = idx.info.obj().getField("expireAfterSeconds");
+                    if( oldExpireSecs.eoo() ){
+                        errmsg = "no expireAfterSeconds field to update";
+                        ok = false;
+                        continue;
+                    }
+                    if( ! oldExpireSecs.isNumber() ) {
+                        errmsg = "existing expireAfterSeconds field is not a number";
+                        ok = false;
+                        continue;
+                    }
+
+                    if ( oldExpireSecs != newExpireSecs ) {
+                        // change expireAfterSeconds
+                        result.appendAs( oldExpireSecs, "expireAfterSeconds_old" );
+                        nsd->updateTTLIndex( idxNo , newExpireSecs );
+                        result.appendAs( newExpireSecs , "expireAfterSeconds_new" );
                     }
                 }
                 else {
@@ -1311,10 +1380,6 @@ namespace mongo {
                 }
             }
             
-            if ( oldFlags != nsd->userFlags() ) {
-                nsd->syncUserFlags( ns );
-            }
-
             return ok;
         }
     } collectionModCommand;

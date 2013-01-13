@@ -21,6 +21,7 @@
 #include <algorithm> // for max
 
 #include "mongo/db/oplog.h"
+#include "mongo/db/ops/field_ref.h"
 #include "mongo/db/jsobjmanipulator.h"
 #include "mongo/db/pdfile.h"
 #include "mongo/util/mongoutils/str.h"
@@ -130,7 +131,7 @@ namespace mongo {
 
             //
             // We can be in a single element push case, a "push all" case, or a "push all" case
-            // with a trim requirement (ie, a "push to size"). In each of these, we decide
+            // with a slice requirement (ie, a "push to size"). In each of these, we decide
             // differently how much of the existing- and of the parameter-array to copy to the
             // final object.
             //
@@ -165,7 +166,7 @@ namespace mongo {
 
             // If we're in the "push all" case, we'll copy all element of both the existing and
             // parameter arrays.
-            else if ( isEach() && ! isTrim() ) {
+            else if ( isEach() && ! isSliceOnly() && ! isSliceAndSort() ) {
                 BSONObjIterator i( in.embeddedObject() );
                 while ( i.more() ) {
                     bb.append( i.next() );
@@ -180,24 +181,24 @@ namespace mongo {
                 ms.fixedArray = BSONArray( bb.done().getOwned() );
             }
 
-            // If we're in the "push all" case with trim, we have to decide how much of each
+            // If we're in the "push all" case with slice, we have to decide how much of each
             // of the existing and parameter arrays to copy to the final object.
-            else {
-                long long trim = getTrim();
+            else if ( isSliceOnly() ) {
+                long long slice = getSlice();
                 BSONObj eachArray = getEach();
                 long long arraySize = in.embeddedObject().nFields();
                 long long eachArraySize = eachArray.nFields();
 
-                // Zero trim is equivalent to resetting the array in the final object, so
+                // Zero slice is equivalent to resetting the array in the final object, so
                 // we won't copy anything.
-                if (trim == 0) {
+                if (slice == 0) {
                     // no-op
                 }
 
-                // If the parameter array alone is larger than the trim, then only copy
+                // If the parameter array alone is larger than the slice, then only copy
                 // object from that array.
-                else if (trim <= eachArraySize) {
-                    long long skip = eachArraySize - trim;
+                else if (slice <= eachArraySize) {
+                    long long skip = eachArraySize - slice;
                     BSONObjIterator j( getEach() );
                     while ( j.more() ) {
                         if ( skip-- > 0 ) {
@@ -208,10 +209,10 @@ namespace mongo {
                     }
                 }
 
-                // If the parameter array is not sufficient to fill the trim, then some (or all)
+                // If the parameter array is not sufficient to fill the slice, then some (or all)
                 // the elements from the existing array will be copied too.
                 else {
-                    long long skip = std::max(0LL, arraySize - (trim - eachArraySize) );
+                    long long skip = std::max(0LL, arraySize - (slice - eachArraySize) );
                     BSONObjIterator i( in.embeddedObject() );
                     while ( i.more() ) {
                         if (skip-- > 0) {
@@ -223,6 +224,44 @@ namespace mongo {
                     BSONObjIterator j( getEach() );
                     while ( j.more() ) {
                         bb.append( j.next() );
+                    }
+                }
+
+                ms.fixedOpName = "$set";
+                ms.forceEmptyArray = true;
+                ms.fixedArray = BSONArray( bb.done().getOwned() );
+            }
+
+            // If we're in the "push all" case ($push with a $each) with sort, we have to
+            // concatenate the existing array with the $each array, sort the result, and then
+            // decide how much of each of the resulting work area to copy to the final object.
+            else {
+                long long slice = getSlice();
+                BSONObj sortPattern = getSort();
+
+                // Zero slice is equivalent to resetting the array in the final object, so
+                // we only go into sorting if there is anything to sort.
+                if ( slice > 0 ) {
+                    vector<BSONObj> workArea;
+                    BSONObjIterator i( in.embeddedObject() );
+                    while ( i.more() ) {
+                        workArea.push_back( i.next().Obj() );
+                    }
+                    BSONObjIterator j( getEach() );
+                    while ( j.more() ) {
+                        workArea.push_back( j.next().Obj() );
+                    }
+                    sort( workArea.begin(), workArea.end(), ProjectKeyCmp( sortPattern ) );
+
+                    long long skip = std::max( 0LL,
+                                               (long long)workArea.size() - slice );
+                    for ( vector<BSONObj>::iterator it = workArea.begin();
+                         it != workArea.end();
+                         ++it ) {
+                        if ( skip-- > 0 ) {
+                            continue;
+                        }
+                        bb.append( *it );
                     }
                 }
 
@@ -501,6 +540,24 @@ namespace mongo {
             ModState& ms = *mss->_mods[i->first];
 
             const Mod& m = i->second;
+
+            // Check for any positional operators that have not been replaced with a numeric field
+            // name (from a query match element).
+            // Only perform this positional operator validation in 'strictApply' mode.  When
+            // replicating from a legacy primary that does not implement this validation, the
+            // secondary bypasses validation and remains consistent with the primary.
+            if ( m.strictApply ) {
+                FieldRef fieldRef;
+                fieldRef.parse( m.fieldName );
+                StringData positionalOpField( "$" );
+                for( size_t i = 0; i < fieldRef.numParts(); ++i ) {
+                     uassert( 16650,
+                              "Cannot apply the positional operator without a corresponding query "
+                              "field containing an array.",
+                              fieldRef.getPart( i ).compare( positionalOpField ) != 0 );
+                }
+            }
+
             BSONElement e = obj.getFieldDotted(m.fieldName);
 
             ms.m = &m;
@@ -572,6 +629,18 @@ namespace mongo {
                 uassert( 10141,
                          "Cannot apply $push/$pushAll modifier to non-array",
                          e.type() == Array || e.eoo() );
+
+                // Currently, we require the base array of a $sort to be made of
+                // objects (as opposed to base types).
+                if ( !e.eoo() && m.isEach() && m.isSliceAndSort() ) {
+                    BSONObjIterator i( e.embeddedObject() );
+                    while ( i.more() ) {
+                        BSONElement arrayItem = i.next();
+                        uassert( 16638,
+                                 "$sort can only be applied to an array of objects",
+                                 arrayItem.type() == Object );
+                    }
+                }
                 mss->amIInPlacePossible( false );
                 break;
 
@@ -1118,35 +1187,83 @@ namespace mongo {
                          "Modifier $pushAll/pullAll allowed for arrays only",
                          f.type() == Array || ( op != Mod::PUSH_ALL && op != Mod::PULL_ALL ) );
 
-                // Check whether $each and $trimTo syntax for $push is correct.
+                // Check whether $each, $slice, and $sort syntax for $push is correct.
                 if ( ( op == Mod::PUSH ) && ( f.type() == Object ) ) {
                     BSONObj pushObj = f.embeddedObject();
                     if ( pushObj.nFields() > 0 &&
                          strcmp(pushObj.firstElement().fieldName(), "$each") == 0 ) {
                         uassert( 16564,
-                                 "$each term needs to occur alone (or with $trimTo)",
-                                 pushObj.nFields() <= 2 );
+                                 "$each term needs to occur alone (or with $slice/$sort)",
+                                 pushObj.nFields() <= 3 );
                         uassert( 16565,
                                  "$each requires an array value",
                                  pushObj.firstElement().type() == Array );
 
-                        if ( pushObj.nFields() == 2 ) {
+                        // If both $slice and $sort are present, they may be switched.
+                        if ( pushObj.nFields() > 1 ) {
                             BSONObjIterator i( pushObj );
                             i.next();
-                            BSONElement trimElem = i.next();
 
-                            uassert( 16566,
-                                     "$each term takes only a $trimTo as a complement",
-                                     str::equals( trimElem.fieldName(), "$trimTo" ) );
-                            uassert( 16567,
-                                     "$trimTo value must be a numeric integer",
-                                     trimElem.type() == NumberInt ||
-                                     trimElem.type() == NumberLong ||
-                                     (trimElem.type() == NumberDouble &&
-                                      trimElem.numberDouble()==(long long)trimElem.numberDouble()));
-                            uassert( 16568,
-                                     "$trimTo value must be positive",
-                                     trimElem.number() >= 0 );
+                            bool seenSlice = false;
+                            bool seenSort = false;
+                            while ( i.more() ) {
+                                BSONElement nextElem = i.next();
+
+                                if ( str::equals( nextElem.fieldName(), "$slice" ) ) {
+                                    uassert( 16567, "$slice appeared twice", !seenSlice);
+                                    seenSlice = true;
+                                    uassert( 16568,
+                                             "$slice value must be a numeric integer",
+                                             nextElem.type() == NumberInt ||
+                                             nextElem.type() == NumberLong ||
+                                             (nextElem.type() == NumberDouble &&
+                                              nextElem.numberDouble() ==
+                                              (long long)nextElem.numberDouble() ) );
+                                    uassert( 16640,
+                                             "$slice value must be negative or zero",
+                                             nextElem.number() <= 0 );
+                                }
+                                else if ( str::equals( nextElem.fieldName(), "$sort" ) ) {
+                                    uassert( 16647, "$sort appeared twice", !seenSort );
+                                    seenSort = true;
+                                    uassert( 16648,
+                                             "$sort component of $push must be an object",
+                                             nextElem.type() == Object );
+
+                                    BSONObjIterator j( nextElem.embeddedObject() );
+                                    while ( j.more() ) {
+                                        BSONElement fieldSortElem = j.next();
+                                        uassert( 16641,
+                                                 "$sort elements' values  must either 1 or -1",
+                                                 ( fieldSortElem.type() == NumberInt ||
+                                                   fieldSortElem.type() == NumberLong ||
+                                                   ( fieldSortElem.type() == NumberDouble &&
+                                                     fieldSortElem.numberDouble() ==
+                                                     (long long) fieldSortElem.numberDouble() ) ) &&
+                                                 fieldSortElem.Number()*fieldSortElem.Number()
+                                                 == 1.0);
+                                    }
+
+                                    // Finally, check if the $each is made of objects (as opposed
+                                    // to basic types). Currently, $sort only supports operating
+                                    // on arrays of objects.
+                                    BSONObj eachArray = pushObj.firstElement().embeddedObject();
+                                    BSONObjIterator k( eachArray );
+                                    while ( k.more() ) {
+                                        BSONElement eachItem = k.next();
+                                        uassert( 16642,
+                                                 "$sort requires $each to be an array of objects",
+                                                 eachItem.type() == Object );
+                                    }
+                                }
+                                else {
+                                    uasserted( 16643,
+                                               "$each term takes only $slice (and optionally "
+                                               "$sort) as complements" );
+                                }
+                            }
+
+                            uassert( 16644, "cannot have a $sort without a $slice", seenSlice );
                         }
                     }
                 }
@@ -1250,5 +1367,55 @@ namespace mongo {
         for ( ModHolder::const_iterator i = _mods.begin(); i != _mods.end(); ++i )
             updateIsIndexed( i->second, idxKeys , backgroundKeys );
     }
+
+    bool getCanonicalIndexField( const StringData& fullName, string* out ) {
+        // check if fieldName contains ".$" or ".###" substrings (#=digit) and skip them
+        if ( fullName.find( '.' ) == string::npos )
+            return false;
+
+        bool modified = false;
+
+        StringBuilder buf;
+        for ( size_t i=0; i<fullName.size(); i++ ) {
+
+            char c = fullName[i];
+
+            if ( c != '.' ) {
+                buf << c;
+                continue;
+            }
+
+            // check for ".$", skip if present
+            if ( fullName[i+1] == '$' ) {
+                i++;
+                modified = true;
+                continue;
+            }
+
+            // check for ".###" for any number of digits (no letters)
+            if ( isdigit( fullName[i+1] ) ) {
+                size_t j = i;
+                // skip digits
+                while ( j+1 < fullName.size() && isdigit( fullName[j+1] ) )
+                    j++;
+
+                if ( j+1 == fullName.size() || fullName[j+1] == '.' ) {
+                    // only digits found, skip forward
+                    i = j;
+                    modified = true;
+                    continue;
+                }
+            }
+
+            buf << c;
+        }
+
+        if ( !modified )
+            return false;
+
+        *out = buf.str();
+        return true;
+    }
+
 
 } // namespace mongo

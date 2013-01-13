@@ -190,10 +190,14 @@ add_option( "distcc" , "use distcc for distributing builds" , 0 , False )
 add_option( "clang" , "use clang++ rather than g++ (experimental)" , 0 , True )
 
 # debugging/profiling help
-
+if os.sys.platform.startswith("linux") and (os.uname()[-1] == 'x86_64'):
+    defaultAllocator = 'tcmalloc'
+elif (os.sys.platform == "darwin") and (os.uname()[-1] == 'x86_64'):
+    defaultAllocator = 'tcmalloc'
+else:
+    defaultAllocator = 'system'
 add_option( "allocator" , "allocator to use (tcmalloc or system)" , 1 , True,
-            default=((sys.platform.startswith('linux') and (os.uname()[-1] == 'x86_64')) and
-                     'tcmalloc' or 'system') )
+            default=defaultAllocator )
 add_option( "gdbserver" , "build in gdb server support" , 0 , True )
 add_option( "heapcheck", "link to heap-checking malloc-lib and look for memory leaks during tests" , 0 , False )
 add_option( "gcov" , "compile with flags for gcov" , 0 , True )
@@ -514,6 +518,7 @@ elif os.sys.platform.startswith("linux"):
 
     if force32:
         env.Append( EXTRALIBPATH=["/usr/lib32"] )
+        env.Append( CCFLAGS=["-mmmx"] )
 
     nix = True
 
@@ -776,6 +781,7 @@ if not use_system_version_of_library("boost"):
                 CPPDEFINES=['BOOST_ALL_NO_LIB'])
 
 env.Prepend(CPPPATH=['$BUILD_DIR/third_party/s2'])
+env.Prepend(CPPPATH=['$BUILD_DIR/third_party/libstemmer_c/include'])
 
 env.Append( CPPPATH=['$EXTRACPPPATH'],
             LIBPATH=['$EXTRALIBPATH'] )
