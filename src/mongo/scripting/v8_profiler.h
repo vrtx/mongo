@@ -1,4 +1,4 @@
-/*    Copyright 2012 10gen Inc.
+/*    Copyright 2013 10gen Inc.
  *
  *    Licensed under the Apache License, Version 2.0 (the "License");
  *    you may not use this file except in compliance with the License.
@@ -25,13 +25,21 @@ namespace mongo {
 
 	class BSONArray;
 
-	class V8Profiler {
+	/** Collect CPU Profiling data from v8. */
+	class V8CpuProfiler {
 	public:
+		/** Start the CPU profiler */
 		void start(const StringData name);
-		void stop(const StringData name);
-		const BSONArray display(const StringData name);
 
+		/** Start the CPU profiler */
+		void stop(const StringData name);
+
+		/** Get the current cpu profiler */
+		const BSONArray fetch(const StringData name);
 	private:
+		void traverseDepthFirst(const v8::CpuProfileNode* cpuProfileNode,
+						 		BSONArrayBuilder& arrayBuilder);
+
 		typedef std::map<std::string, const v8::CpuProfile*> CpuProfileMap;
 		CpuProfileMap _cpuProfiles;
 	};

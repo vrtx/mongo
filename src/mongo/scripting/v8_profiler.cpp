@@ -1,4 +1,4 @@
-/*    Copyright 2012 10gen Inc.
+/*    Copyright 2013 10gen Inc.
  *
  *    Licensed under the Apache License, Version 2.0 (the "License");
  *    you may not use this file except in compliance with the License.
@@ -20,20 +20,24 @@
 #include "mongo/util/mongoutils/str.h"
 
 namespace mongo {
-	void V8Profiler::start(const StringData name) {
+	void V8CpuProfiler::start(const StringData name) {
 		v8::CpuProfiler::StartProfiling(v8::String::New(name.toString().c_str()));
 	}
 
-	void V8Profiler::stop(const StringData name) {
-		_cpuProfiles.insert(make_pair(name.toString(), v8::CpuProfiler::StopProfiling(v8::String::New(name.toString().c_str()))));
+	void V8CpuProfiler::stop(const StringData name) {
+		_cpuProfiles.insert(make_pair(name.toString(),
+				v8::CpuProfiler::StopProfiling(v8::String::New(name.toString().c_str()))));
 	}
 
-	void traverseDepthFirst(const v8::CpuProfileNode* cpuProfileNode, BSONArrayBuilder& arrayBuilder) {
+	void V8CpuProfiler::traverseDepthFirst(const v8::CpuProfileNode* cpuProfileNode,
+								 		BSONArrayBuilder& arrayBuilder) {
 		if (cpuProfileNode == NULL)
 			return;
 		BSONObjBuilder frameObjBuilder;
-		frameObjBuilder.append("Function", *v8::String::Utf8Value(cpuProfileNode->GetFunctionName()));
-		frameObjBuilder.append("Source", *v8::String::Utf8Value(cpuProfileNode->GetScriptResourceName()));
+		frameObjBuilder.append("Function",
+							   *v8::String::Utf8Value(cpuProfileNode->GetFunctionName()));
+		frameObjBuilder.append("Source",
+							   *v8::String::Utf8Value(cpuProfileNode->GetScriptResourceName()));
 		frameObjBuilder.appendNumber("Line", cpuProfileNode->GetLineNumber());
 		frameObjBuilder.appendNumber("SelfTime", cpuProfileNode->GetSelfTime());
 		frameObjBuilder.appendNumber("TotalTime", cpuProfileNode->GetTotalTime());
@@ -47,7 +51,7 @@ namespace mongo {
 		arrayBuilder << frameObjBuilder.obj();
 	}
 
-	const BSONArray V8Profiler::display(const StringData name) {
+	const BSONArray V8CpuProfiler::fetch(const StringData name) {
 		BSONArrayBuilder arrayBuilder;
 		CpuProfileMap::const_iterator iProf = _cpuProfiles.find(name.toString());
 		if (iProf == _cpuProfiles.end())
