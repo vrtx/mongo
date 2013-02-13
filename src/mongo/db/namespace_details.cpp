@@ -198,7 +198,7 @@ namespace mongo {
             // defensive code: try to make us notice if we reference a deleted record
             reinterpret_cast<unsigned*>( r->data() )[0] = 0xeeeeeeee;
         }
-        DEBUGGING log() << "TEMP: add deleted rec " << dloc.toString() << ' ' << hex << d->extentOfs() << endl;
+        log() << "TEMP: add deleted rec " << dloc.toString() << ' ' << hex << d->extentOfs() << endl;
         if ( isCapped() ) {
             if ( !cappedLastDelRecLastExtent().isValid() ) {
                 // Initial extent allocation.  Insert at end.
@@ -219,11 +219,45 @@ namespace mongo {
             }
         }
         else {
+            // BB TODO: change sentinel (to indicate version)
+            // BB TODO: verify write intents are correct
+            // see if we can coalesce next record
+            const int kAdjSentinel = dloc.getOfs() + d->lengthWithHeaders();
+            if (kAdjSentinel > 0) {
+                // not past end of file (because no overflow)
+                DiskLoc adjDelRec(dloc.a(), kAdjSentinel);                
+                log() << "    not past eof.  looking at int:" << hex << *reinterpret_cast<unsigned*>(adjDelRec.rec()->data()) << dec << endl;
+                if (*reinterpret_cast<unsigned*>(adjDelRec.rec()->data()) == 0xeeeeeeee) {
+                    // remove adjacent record from linked list
+                    log() << "    adjacent rec is free!" << endl;
+
+                    if (adjDelRec.drec()->prevDeleted().isValid()) {
+                        // update adjacent's previous record
+                        log() << "    < has prev" << endl;
+                        adjDelRec.drec()->prevDeleted().drec()->nextDeleted().writing() =
+                                adjDelRec.drec()->nextDeleted();
+                    }
+                    if (adjDelRec.drec()->nextDeleted().isValid()) {
+                        // update adjacent's next record
+                        log() << "    > has next" << endl;
+                        adjDelRec.drec()->nextDeleted().drec()->prevDeleted().writing() =
+                                adjDelRec.drec()->prevDeleted();
+                    }
+
+                    // update length of the coalesced record
+                    d->lengthWithHeaders() += adjDelRec.drec()->lengthWithHeaders();
+                }
+            }
+
+            // add this record to the appropriate bucket
+            log() << "Adding deleted record of len: " << d->lengthWithHeaders() << endl;
             int b = bucket(d->lengthWithHeaders());
             DiskLoc& list = deletedList[b];
             DiskLoc oldHead = list;
             getDur().writingDiskLoc(list) = dloc;
             d->nextDeleted() = oldHead;
+            if (!oldHead.isNull())
+                oldHead.drec()->prevDeleted().writing() = dloc;
         }
     }
 
@@ -304,6 +338,7 @@ namespace mongo {
         newDelW->extentOfs() = r->extentOfs();
         newDelW->lengthWithHeaders() = left;
         newDelW->nextDeleted().Null();
+        newDelW->prevDeleted().Null();
 
         addDeletedRec(newDel, newDelLoc);
 
