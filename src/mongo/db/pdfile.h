@@ -212,7 +212,13 @@ namespace mongo {
 
         // TODO: we need to not const_cast here but problem is DiskLoc::writing
         DiskLoc& nextDeleted() const { _accessing(); return const_cast<DiskLoc&>(_nextDeleted); }
-        DiskLoc& prevDeleted() const { _accessing(); return const_cast<DiskLoc&>(_prevDeleted); }
+        // NB: previous record DiskLoc in the double linked list is stored in the 8 bytes
+        //     immediately following the record (thus overwriting the BSON size and first
+        //     4 bytes of BSON data).
+        DiskLoc prevDeleted() const {
+            _accessing();
+            return *reinterpret_cast<const DiskLoc*>(&_nextDeleted + sizeof(DiskLoc));
+        }
 
         DiskLoc myExtentLoc(const DiskLoc& myLoc) const {
             _accessing();
@@ -228,8 +234,7 @@ namespace mongo {
 
         int _lengthWithHeaders;
         int _extentOfs;
-        DiskLoc _nextDeleted;   // next record in the list
-        DiskLoc _prevDeleted;   // previous record in the list
+        DiskLoc _nextDeleted;   // next record in the dl list
     };
 
     /* Record is a record in a datafile.  DeletedRecord is similar but for deleted space.
@@ -652,7 +657,7 @@ namespace mongo {
         return cc().database()->getFile(dl.a())->recordAt(dl);
     }
 
-    BOOST_STATIC_ASSERT( 24 == sizeof(DeletedRecord) );
+    BOOST_STATIC_ASSERT( 16 == sizeof(DeletedRecord) );
 
     inline DeletedRecord* DataFileMgr::getDeletedRecord(const DiskLoc& dl) {
         return reinterpret_cast<DeletedRecord*>(getRecord(dl));

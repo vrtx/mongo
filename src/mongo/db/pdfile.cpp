@@ -19,7 +19,6 @@
 /*
 todo:
 _ table scans must be sequential, not next/prev pointers
-_ coalesce deleted
 _ disallow system* manipulations from the database.
 */
 

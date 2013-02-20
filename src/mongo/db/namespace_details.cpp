@@ -222,11 +222,12 @@ namespace mongo {
             // BB TODO: change sentinel (to indicate version)
             // BB TODO: verify write intents are correct
             // see if we can coalesce next record
-            const int kAdjSentinel = dloc.getOfs() + d->lengthWithHeaders();
-            if (kAdjSentinel > 0) {
+            const int adjDelRecOffset = dloc.getOfs() + d->lengthWithHeaders();
+            log() << "    this drec ofs: " << dloc.getOfs() << "  next: " << adjDelRecOffset << endl;
+            if (adjDelRecOffset > 0) {
                 // not past end of file (because no overflow)
-                DiskLoc adjDelRec(dloc.a(), kAdjSentinel);                
-                log() << "    not past eof.  looking at int:" << hex << *reinterpret_cast<unsigned*>(adjDelRec.rec()->data()) << dec << endl;
+                DiskLoc adjDelRec(dloc.a(), adjDelRecOffset);
+                log() << "    looking at int: " << hex << *reinterpret_cast<unsigned*>(adjDelRec.rec()->data()) << dec << endl;
                 if (*reinterpret_cast<unsigned*>(adjDelRec.rec()->data()) == 0xeeeeeeee) {
                     // remove adjacent record from linked list
                     log() << "    adjacent rec is free!" << endl;
