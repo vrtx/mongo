@@ -191,7 +191,7 @@ namespace mongo {
 
     void NamespaceDetails::coalesceAdjacentDeletedRecord(DiskLoc& thisLoc) {
         DeletedRecord* thisRec = thisLoc.drec();
-        Extent* thisExtent = thisRec->myExtentLoc(thisLoc).ext();
+        Extent* thisExtent = thisRec->myExtent(thisLoc);
 
         fassert(16704, thisRec->extentOfs() < thisLoc.getOfs());
 
