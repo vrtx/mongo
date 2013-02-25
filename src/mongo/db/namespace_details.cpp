@@ -285,7 +285,7 @@ namespace mongo {
                 log() << "     has next or none" << endl;
                 if (adjNext) {
                     log() << "           has next" << endl;
-                    // link has next pointer, thus drec was created with version <= 2.4
+                    // link only has next pointer, thus drec was created with version <= 2.4
                     adjNext->prevDeleted().writing() = DiskLoc();
                 }
                 // update bucket list head
@@ -308,9 +308,9 @@ namespace mongo {
         BOOST_STATIC_ASSERT( sizeof(NamespaceDetails::Extra) <= sizeof(NamespaceDetails) );
 
         {
-            Record *r = (Record *) getDur().writingPtr(d, sizeof(Record));
+            Record *r = (Record *) getDur().writingPtr(d, sizeof(DeletedRecord) + 12);
             d = &r->asDeleted();
-            // defensive code: try to make us notice if we reference a deleted record
+            // add a sentinel value to the deleted record and reset the next/prev pointers
             reinterpret_cast<unsigned*>( r->data() )[0] = 0xeeeeeeee;
             d->prevDeleted() = DiskLoc();
             d->nextDeleted() = DiskLoc();
@@ -345,7 +345,6 @@ namespace mongo {
             DiskLoc oldHead = list;
             getDur().writingDiskLoc(list) = dloc;
             d->nextDeleted() = oldHead;
-            d->prevDeleted() = DiskLoc();
             if (!oldHead.isNull() && oldHead.isValid()) {
                 log() << "        adding drec to empty list" << endl;
                 oldHead.drec()->prevDeleted().writing() = dloc;
@@ -513,33 +512,19 @@ namespace mongo {
         /* unlink ourself from the deleted list */
         if( !peekOnly ) {
             DeletedRecord *bmr = bestmatch.drec();
-            *getDur().writing(bestprev) = bmr->nextDeleted(); // TODO: why?
-            bmr->nextDeleted().writing().setInvalid(); // defensive.
-            log() << " ******* bestmatch: " << bestmatch
-                  << " bestprev: " << *bestprev
-                  << " bestmatch->nextDeleted(): " << bmr->nextDeleted()
-                  << " bestmatch->prevDeleted(): " << bmr->prevDeleted()
-                  << endl;
-
-            if (!bmr->nextDeleted().isNull() && bmr->nextDeleted().isValid() &&
-                !bmr->prevDeleted().isNull() && bmr->prevDeleted().isValid()) {
-                // best match has next and previous record links
-                log() << "__stdAlloc: best match has next and prev" << endl;
+            *getDur().writing(bestprev) = bmr->nextDeleted();
+            if (!bmr->nextDeleted().isNull()) {
+                // best match has next record link
                 bmr->nextDeleted().drec()->prevDeleted().writing() = bmr->prevDeleted();
-                bmr->prevDeleted().drec()->prevDeleted().writing() = bmr->nextDeleted();
+                // bmr->nextDeleted().drec()->prevDeleted().writing() = *bestprev;
+                log() << " ******* bestmatch: " << bestmatch
+                      << " bestprev: " << *bestprev
+                      << " bestmatch->nextDeleted(): " << bmr->nextDeleted()
+                      << " bestmatch->prevDeleted(): " << bmr->prevDeleted()
+                      << endl;
             }
-            else if (!bmr->nextDeleted().isNull() && bmr->nextDeleted().isValid()) {
-                // best match only has next record links
-                log() << "__stdAlloc: best match only has next" << endl;
-                bmr->nextDeleted().drec()->prevDeleted().writing() = DiskLoc();
-            }
-            else if (!bmr->prevDeleted().isNull() && bmr->prevDeleted().isValid()) {
-                // best match only has prev record links
-                log() << "__stdAlloc: best match only has prev" << endl;
-                bmr->prevDeleted().drec()->nextDeleted().writing() = DiskLoc();
-            } else {
-                log() << "__stdAlloc: best match has no next or prev links" << endl;
-            }
+            bmr->nextDeleted().writing().setInvalid(); // defensive.
+
             verify(bmr->extentOfs() < bestmatch.getOfs());
         }
 
