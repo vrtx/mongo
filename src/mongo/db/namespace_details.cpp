@@ -191,116 +191,79 @@ namespace mongo {
 
     void NamespaceDetails::coalesceAdjacentDeletedRecord(DiskLoc& thisLoc) {
         DeletedRecord* thisRec = thisLoc.drec();
+        DeletedRecord* adjPrev = NULL;
+        DeletedRecord* adjNext = NULL;
         Extent* thisExtent = thisRec->myExtent(thisLoc);
-
         fassert(16704, thisRec->extentOfs() < thisLoc.getOfs());
 
         // find the next (forward) adjacent record
         const int32_t adjacentRecordOffset = thisLoc.getOfs() + thisRec->lengthWithHeaders();
-        if (adjacentRecordOffset >= thisRec->extentOfs() + thisExtent->length) {
+        if (adjacentRecordOffset >= thisRec->extentOfs() + thisExtent->length)
             // adjacent record is at or past end of extent; nothing to coalesce
-            log() << " - not coalescing: adjacent record offset: " << adjacentRecordOffset
-                  << " is past end of extent: " << thisRec->extentOfs() + thisExtent->length << endl;
             return;
-        }
+
         DiskLoc adjacentLoc(thisLoc.a(), adjacentRecordOffset);
         DeletedRecord* adjacentRec = adjacentLoc.drec();
-
         fassert(16705, adjacentRecordOffset + adjacentRec->lengthWithHeaders() <=
-                   thisRec->extentOfs() + thisExtent->length);
+                       thisRec->extentOfs() + thisExtent->length);
 
-        log() << "  [cur @" << thisLoc
-              << " length: " << dec << thisLoc.drec()->lengthWithHeaders()
-              << " sentinel: 0x" << hex << thisLoc.drec()->getSentinel()
-              << " prev: @" << thisLoc.drec()->prevDeleted()
-              << " next: @" << thisLoc.drec()->nextDeleted() << dec << "]" << endl;
+        // verify adjacent record is a deleted record
+        if (adjacentRec->getSentinel() != 0xeeeeeeee)
+            return
 
-        log() << "  [adj @" << adjacentLoc
-              << " length: " << dec << adjacentRec->lengthWithHeaders()
-              << " sentinel: 0x" << hex << adjacentRec->getSentinel()
-              << " prev: @" << adjacentRec->prevDeleted()
-              << " next: @" << adjacentRec->nextDeleted() << dec << "]" << endl;
-
-        // verify adjacent record is a valid deleted record and can be safely coalesced
-
-        if (adjacentRec->getSentinel() == 0xeeeeeeee) {
-            // adjacent space looks like a deleted record
-            log() << "    adjacent rec looks free" << endl;
-
-            // get adjacent record's previous link
-            if (!adjacentRec->prevDeleted().isValid()) {
-                // adjacent record has invalid previous pointer
-                log() << "      adj -> prev is invalid" << endl;
+        // get adjacent record's previous link
+        if (!adjacentRec->prevDeleted().isValid())
+            // adjacent record has invalid previous pointer
+            return;
+        if (!adjacentRec->prevDeleted().isNull()) {
+            // adjacent -> prev exists; not head of a list
+            adjPrev = adjacentRec->prevDeleted().drec();
+            if (adjPrev->nextDeleted() != adjacentLoc)
+                // adjacent -> previous -> next doesn't match adjacent; possibly due to
+                // downgrade and subsequent upgrade
                 return;
-            }
-            DeletedRecord* adjPrev = NULL;
-            if (!adjacentRec->prevDeleted().isNull()) {
-                // adjacent -> prev is not head of a list
-                log() << "        checking if adj has valid prev record" << endl;
-                adjPrev = adjacentRec->prevDeleted().drec();
-                if (adjPrev->nextDeleted() != adjacentLoc) {
-                    // adjacent -> previous -> next doesn't match adjacent; possibly due to 
-                    // downgrade and subsequent upgrade
-                    log() << "      adj -> prev -> next doesn't match adj" << endl;
-                    return;
-                }
-                log() << "        < adj has valid prev record" << endl;
-            }
-
-            // get adjacent record's next link
-            if (!adjacentRec->nextDeleted().isValid()) {
-                // adjacent record has invalid previous pointer
-                log() << "      adj -> next is invalid" << endl;
-                return;
-            }
-            DeletedRecord* adjNext = NULL;
-            if (!adjacentRec->nextDeleted().isNull()) {
-                log() << "        checking if adj has valid next record" << endl;
-                adjNext = adjacentRec->nextDeleted().drec();
-                if (adjNext->prevDeleted() != adjacentLoc) {
-                    // adjacent -> next -> previous doesn't match adjacent; possibly due to 
-                    // downgrade and subsequent upgrade
-                    log() << "    adj -> next -> prev doesn't match adj" << endl;
-                    return;
-                }
-                log() << "        > adj has valid next record" << endl;
-            }
-
-            // TODO: validate links via XOR?
-
-            // remove adjacent record from its linked list
-            if (adjNext && adjPrev) {
-                // link has next and prev pointers
-                log() << "     has next and prev" << endl;
-                adjNext->prevDeleted().writing() = adjacentRec->prevDeleted();
-                adjPrev->nextDeleted().writing() = adjacentRec->nextDeleted();
-            }
-            else if (adjPrev) {
-                // link only has prev pointer
-                log() << "     has prev" << endl;
-                adjPrev->nextDeleted().writing() = DiskLoc();
-            }
-            else {
-                // no back link; this is the first or only record in the list
-                log() << "     has next or none" << endl;
-                if (adjNext) {
-                    log() << "           has next" << endl;
-                    // link only has next pointer, thus drec was created with version <= 2.4
-                    adjNext->prevDeleted().writing() = DiskLoc();
-                }
-                // update bucket list head
-                int b = bucket(adjacentRec->lengthWithHeaders());
-                log() << " * updating now-empty bucket head: " << b << endl;
-                DiskLoc& list = deletedList[b];
-                getDur().writingDiskLoc(list) = DiskLoc();
-            }
-
-            // update length of the coalesced record.
-            // NOTE: write intent of thisRec is already set in addDeletedRec
-            thisRec->lengthWithHeaders() += adjacentRec->lengthWithHeaders();
-            log() << " +++ successfully coalesced records.  new size: "
-                  << thisRec->lengthWithHeaders() << endl;
         }
+
+        // get adjacent record's next link
+        if (!adjacentRec->nextDeleted().isValid())
+            // adjacent record has invalid previous pointer
+            return;
+        if (!adjacentRec->nextDeleted().isNull()) {
+            adjNext = adjacentRec->nextDeleted().drec();
+            if (adjNext->prevDeleted() != adjacentLoc)
+                // adjacent -> next -> previous doesn't match adjacent; possibly due to
+                // downgrade and subsequent upgrade
+                return;
+        }
+
+        // TODO: validate links via XOR?
+
+        // remove adjacent record from its linked list
+        if (adjNext && adjPrev) {
+            // link has next and prev pointers
+            adjNext->prevDeleted().writing() = adjacentRec->prevDeleted();
+            adjPrev->nextDeleted().writing() = adjacentRec->nextDeleted();
+        }
+        else if (adjPrev) {
+            // link only has prev pointer
+            adjPrev->nextDeleted().writing() = DiskLoc();
+        }
+        else {
+            // no back link; this is the first or only record in the list
+            if (adjNext)
+                // link only has next pointer, thus drec was created with version <= 2.4
+                adjNext->prevDeleted().writing() = DiskLoc();
+
+            // update bucket list head
+            int b = bucket(adjacentRec->lengthWithHeaders());
+            DiskLoc& list = deletedList[b];
+            getDur().writingDiskLoc(list) = DiskLoc();
+        }
+
+        // update length of the coalesced record.  NOTE: write intent of thisRec is already
+        // declared in addDeletedRec
+        thisRec->lengthWithHeaders() += adjacentRec->lengthWithHeaders();
+
         return;
     }
 
@@ -315,7 +278,7 @@ namespace mongo {
             d->prevDeleted() = DiskLoc();
             d->nextDeleted() = DiskLoc();
         }
-        log() << "TEMP: add deleted rec " << dloc.toString() << ' ' << hex << d->extentOfs() << dec << endl;
+        DEBUGGING log() << "TEMP: add deleted rec " << dloc.toString() << ' ' << hex << d->extentOfs() << endl;
         if ( isCapped() ) {
             if ( !cappedLastDelRecLastExtent().isValid() ) {
                 // Initial extent allocation.  Insert at end.
@@ -345,12 +308,8 @@ namespace mongo {
             DiskLoc oldHead = list;
             getDur().writingDiskLoc(list) = dloc;
             d->nextDeleted() = oldHead;
-            if (!oldHead.isNull() && oldHead.isValid()) {
-                log() << "        adding drec to empty list" << endl;
+            if (!oldHead.isNull() && oldHead.isValid())
                 oldHead.drec()->prevDeleted().writing() = dloc;
-            }
-            log() << "done deleting.  dumping deleted records:" << endl;
-            dumpDeleted();
         }
     }
 
@@ -513,18 +472,10 @@ namespace mongo {
         if( !peekOnly ) {
             DeletedRecord *bmr = bestmatch.drec();
             *getDur().writing(bestprev) = bmr->nextDeleted();
-            if (!bmr->nextDeleted().isNull()) {
+            if (!bmr->nextDeleted().isNull())
                 // best match has next record link
                 bmr->nextDeleted().drec()->prevDeleted().writing() = bmr->prevDeleted();
-                // bmr->nextDeleted().drec()->prevDeleted().writing() = *bestprev;
-                log() << " ******* bestmatch: " << bestmatch
-                      << " bestprev: " << *bestprev
-                      << " bestmatch->nextDeleted(): " << bmr->nextDeleted()
-                      << " bestmatch->prevDeleted(): " << bmr->prevDeleted()
-                      << endl;
-            }
             bmr->nextDeleted().writing().setInvalid(); // defensive.
-
             verify(bmr->extentOfs() < bestmatch.getOfs());
         }
 
