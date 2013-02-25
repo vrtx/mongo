@@ -210,14 +210,26 @@ namespace mongo {
         int extentOfs() const { _accessing(); return _extentOfs; }
         int& extentOfs() { _accessing(); return _extentOfs; }
 
+        /** Get the next record link (all versions) */
         // TODO: we need to not const_cast here but problem is DiskLoc::writing
         DiskLoc& nextDeleted() const { _accessing(); return const_cast<DiskLoc&>(_nextDeleted); }
-        // NB: previous record DiskLoc in the double linked list is stored in the 8 bytes
-        //     immediately following the record (thus overwriting the BSON size and first
-        //     4 bytes of BSON data).
-        DiskLoc prevDeleted() const {
+
+        /**
+         * Get the previous record link, which is stored 4 bytes after the header (for
+         * backwards compatibility).  Only exists for records written in v2.5+.
+         */
+        DiskLoc& prevDeleted() const {
             _accessing();
-            return *reinterpret_cast<const DiskLoc*>(&_nextDeleted + sizeof(DiskLoc));
+            return *reinterpret_cast<DiskLoc*>(reinterpret_cast<uint8_t*>(
+                                                        const_cast<DeletedRecord*>(this)) +
+                                               sizeof(DeletedRecord) + 4);
+        }
+
+        /** Get sentinel value immediately following the header */
+        uint32_t getSentinel() const {
+            return *reinterpret_cast<uint32_t*>(reinterpret_cast<uint8_t*>(
+                                                        const_cast<DeletedRecord*>(this)) +
+                                                sizeof(DeletedRecord));
         }
 
         DiskLoc myExtentLoc(const DiskLoc& myLoc) const {
@@ -234,7 +246,8 @@ namespace mongo {
 
         int _lengthWithHeaders;
         int _extentOfs;
-        DiskLoc _nextDeleted;   // next record in the dl list
+        DiskLoc _nextDeleted;   // version <= 2.4: next record in the singly-linked list
+                                // version >= 2.5: next record in the doubly-linked list
     };
 
     /* Record is a record in a datafile.  DeletedRecord is similar but for deleted space.

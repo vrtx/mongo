@@ -1084,11 +1084,11 @@ namespace mongo {
                 memset(getDur().writingPtr(todelete, todelete->lengthWithHeaders() ), 0, todelete->lengthWithHeaders() );
             }
             else {
-                DEV {
-                    unsigned long long *p = reinterpret_cast<unsigned long long *>( todelete->data() );
-                    *getDur().writing(p) = 0;
-                    //DEV memset(todelete->data, 0, todelete->netLength()); // attempt to notice invalid reuse.
-                }
+                // DEV {
+                //     unsigned long long *p = reinterpret_cast<unsigned long long *>( todelete->data() );
+                //     *getDur().writing(p) = 0;
+                //     //DEV memset(todelete->data, 0, todelete->netLength()); // attempt to notice invalid reuse.
+                // }
                 d->addDeletedRec((DeletedRecord*)todelete, dl);
             }
         }

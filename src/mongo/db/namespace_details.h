@@ -369,6 +369,8 @@ namespace mongo {
         */
         static int quantizeAllocationSpace(int allocSize);
 
+        void coalesceAdjacentDeletedRecord(DiskLoc& thisLoc);
+
         /* predetermine location of the next alloc without actually doing it. 
            if cannot predetermine returns null (so still call alloc() then)
         */
