@@ -52,6 +52,7 @@ public:
         }
         break;
       case mongo::dbGetMore:
+        // todo: need this before release to ace.
         break;
       case mongo::dbKillCursors:
         break;
@@ -64,6 +65,25 @@ public:
   // todo: hook up to signal handlers (and check file state)
   void done() {
     fflush(reportFile);
+  }
+
+  void aggregateResults() {
+    printf("aggregating results.\n");
+    // todo: group by could be any one of:
+    //  - literal query
+    //  - query signature
+    //  - host:port
+    //  - dbname
+  }
+
+  void writeResults() {
+    printf("writing results.\n");
+    fflush(reportFile);
+  }
+
+  void reset() {
+    collections.clear();
+    opTimeMap.clear();
   }
 
 private:

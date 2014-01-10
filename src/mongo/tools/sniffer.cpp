@@ -68,6 +68,7 @@
 #include "mongo/util/net/message.h"
 #include "mongo/util/mmap.h"
 #include "mongo/util/text.h"
+#include "stats_collector.h"
 
 using namespace std;
 using mongo::Message;
@@ -85,6 +86,7 @@ int captureHeaderSize;
 set<int> serverPorts;
 string forwardAddress;
 bool objcheck = false;
+StatsCollector *statsCollector = NULL;
 
 ostream *outPtr = &cout;
 ostream &out() { return *outPtr; }
@@ -256,14 +258,37 @@ void got_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *pa
 
     DbMessage d( m );
 
-    out() << inet_ntoa(ip->ip_src) << ":" << ntohs( tcp->th_sport )
-          << ( serverPorts.count( ntohs( tcp->th_dport ) ) ? "  -->> " : "  <<--  " )
-          << inet_ntoa(ip->ip_dst) << ":" << ntohs( tcp->th_dport )
-          << " " << d.getns()
-          << "  " << m.header()->len << " bytes "
-          << " id:" << hex << m.header()->id << dec << "\t" << m.header()->id;
+    // out() << inet_ntoa(ip->ip_src) << ":" << ntohs( tcp->th_sport )
+    //       << ( serverPorts.count( ntohs( tcp->th_dport ) ) ? "  -->> " : "  <<--  " )
+    //       << inet_ntoa(ip->ip_dst) << ":" << ntohs( tcp->th_dport )
+    //       << " " << d.getns()
+    //       << "  " << m.header()->len << " bytes "
+    //       << " id:" << hex << m.header()->id << dec << "\t" << m.header()->id;
 
+    if (statsCollector != NULL) {
+        int serverPort;
+        char* host;
+        if (serverPorts.count(ntohs(tcp->th_dport)) > 0) {
+            serverPort = ntohs(tcp->th_dport);
+            host = inet_ntoa(ip->ip_src);
+        } else {
+            serverPort = ntohs(tcp->th_sport);
+            host = inet_ntoa(ip->ip_dst);
+        }
+        statsCollector->recordMessage(host, serverPort, m);
+        return;
+    }
     processMessage( c , m );
+}
+
+void sighandler(int sig) {
+    if (statsCollector != NULL) {
+        statsCollector->aggregateResults();
+        statsCollector->writeResults();
+        statsCollector->reset();
+    }
+    if (sig != SIGUSR1)
+        ::_exit(0);
 }
 
 class AuditingDbMessage : public DbMessage {
@@ -434,7 +459,7 @@ void processDiagLog( const char * file ) {
 
 void usage() {
     cout <<
-         "Usage: mongosniff [--help] [--forward host:port] [--source (NET <interface> | (FILE | DIAGLOG) <filename>)] [<port0> <port1> ... ]\n"
+         "Usage: mongosniff [--help] [--forward host:port] [--source (NET <interface> | (FILE | DIAGLOG) <filename>)] [--collect ] [<port0> <port1> ... ]\n"
          "--forward       Forward all parsed request messages to mongod instance at \n"
          "                specified host:port\n"
          "--source        Source of traffic to sniff, either a network interface or a\n"
@@ -448,6 +473,8 @@ void usage() {
          "<port0>...      These parameters are used to filter sniffing.  By default, \n"
          "                only port 27017 is sniffed.\n"
          "--help          Print this help message.\n"
+         "--stats         Record statistics about this session.  Use SIGUSR1 to\n"
+         "                generate a report.\n"
          << endl;
 }
 
@@ -504,6 +531,12 @@ int toolMain(int argc, char **argv, char** envp) {
             else if ( arg == string( "--objcheck" ) ) {
                 objcheck = true;
                 outPtr = &nullStream;
+            }
+            else if (arg == string("--stats")) {
+                statsCollector = StatsCollector::initSingleton(args[++i]);
+                signal(SIGTERM, sighandler);
+                signal(SIGINT, sighandler);
+                signal(SIGUSR1, sighandler);
             }
             else {
                 serverPorts.insert( atoi( args[ i ] ) );
