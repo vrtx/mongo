@@ -104,8 +104,9 @@ private:
   }
 
   void logResponse(int32_t msgid) {
+    uint64_t now = mongo::curTimeMicros64();
     QueryStat &stat = queryStats[msgid];
-    stat.totalTime = mongo::curTimeMicros64() - stat.startTime;
+    stat.totalTime = now - stat.startTime;
   }
 
 };
