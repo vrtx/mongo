@@ -3,6 +3,7 @@
 #include <stdio.h>
 
 #include "mongo/base/initializer.h"
+#include "mongo/base/string_data.h"
 #include "mongo/bson/util/builder.h"
 #include "mongo/client/dbclientinterface.h"
 #include "mongo/db/dbmessage.h"
@@ -59,12 +60,22 @@ public:
     //  - query signature
     //  - host:port
     //  - dbname
+    for (QueryMap::const_iterator i = queryStats.begin(); i != queryStats.end(); ++i) {
+      mongo::StringData key(i->second.signature);
+      AggResults &queryAgg = aggResults[key];
+      ++queryAgg.count;
+      queryAgg.totalTime += i->second.totalTime;
+    }
   }
 
   void writeResults() {
+    // format is:
+    // count \t total \t querySignature
+    // where count is the number of repeated queries, and totalTime is the sum of all response times
     printf("writing results.\n");
-    for (QueryMap::const_iterator i = queryStats.begin(); i != queryStats.end(); ++i) {
-      if (fprintf(reportFile, "%s %llu\n", i->second.signature.c_str(), i->second.totalTime) < 0) {
+    fseek(reportFile, 0, SEEK_SET); // overwrite any previously written results
+    for (ResultsMap::const_iterator i = aggResults.begin(); i != aggResults.end(); ++i) {
+      if (fprintf(reportFile, "%u\t%u\t%s\n", i->second.count, i->second.totalTime, i->first.rawData()) < 0) {
         printf("error writing to file: %s\n", strerror(errno));
         break;
       }
@@ -74,6 +85,7 @@ public:
 
   void reset() {
     queryStats.clear();
+    // aggResults.clear(); // never clear the aggregated results
   }
 
 private:
@@ -82,8 +94,14 @@ private:
     uint64_t startTime;
     uint64_t totalTime;
   };
+  struct AggResults {
+    uint32_t totalTime;
+    uint32_t count;
+  };
   typedef mongo::unordered_map<int32_t, QueryStat> QueryMap;
+  typedef mongo::unordered_map<mongo::StringData, AggResults, mongo::StringData::Hasher> ResultsMap;
   QueryMap queryStats;
+  ResultsMap aggResults;
   FILE* reportFile;
   static StatsCollector* singleton; // not thread safe
 
