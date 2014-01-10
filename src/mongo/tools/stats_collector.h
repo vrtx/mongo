@@ -84,8 +84,8 @@ public:
   }
 
   void reset() {
-    queryStats.clear();
-    // aggResults.clear(); // never clear the aggregated results
+    // queryStats.clear(); // don't clear; required for aggregated result key
+    aggResults.clear(); // never clear the aggregated results
   }
 
 private:
