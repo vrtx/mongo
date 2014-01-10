@@ -28,28 +28,13 @@ public:
   }
 
   void recordMessage(char* host, int port, mongo::Message& m) {
-    mongo::string message = m.toString();
-    int32_t msgid = 0;
     switch (m.operation()) {
       case mongo::opReply:
-        {
-          mongo::DbMessage dbm(m);
-          msgid = m.header()->responseTo.get();
-          uint64_t queryTime = mongo::curTimeMicros() - opTimeMap[msgid];
-          logQuery(collections[msgid].rawData(), queryTime);
-          opTimeMap.erase(msgid);
-          collections.erase(msgid);
-        }
+        // todo: don't log if results are incomplete
+        logResponse(m.header()->responseTo.get());
         break;
       case mongo::dbQuery:
-        {
-          mongo::DbMessage dbm(m);
-          msgid = m.header()->id.get();
-          mongo::StringData ns = dbm.getns();
-          opTimeMap[msgid] = mongo::curTimeMicros();
-          collections[msgid] = ns;
-          // todo: will leak if cursor is not exhausted.  handle killcursor and socket disconnect.
-        }
+        logQuery(m);
         break;
       case mongo::dbGetMore:
         // todo: need this before release to ace.
@@ -78,28 +63,49 @@ public:
 
   void writeResults() {
     printf("writing results.\n");
+    for (QueryMap::const_iterator i = queryStats.begin(); i != queryStats.end(); ++i) {
+      if (fprintf(reportFile, "%s %llu\n", i->second.signature.c_str(), i->second.totalTime) < 0) {
+        printf("error writing to file: %s\n", strerror(errno));
+        break;
+      }
+    }
     fflush(reportFile);
   }
 
   void reset() {
-    collections.clear();
-    opTimeMap.clear();
+    queryStats.clear();
   }
 
 private:
-  typedef mongo::unordered_map<int32_t, uint64_t> OpTimeMap;
-  typedef mongo::unordered_map<int32_t, mongo::StringData> CollectionMap;
-  OpTimeMap opTimeMap;
-  CollectionMap collections;
+  struct QueryStat {
+    mongo::string signature;
+    uint64_t startTime;
+    uint64_t totalTime;
+  };
+  typedef mongo::unordered_map<int32_t, QueryStat> QueryMap;
+  QueryMap queryStats;
   FILE* reportFile;
   static StatsCollector* singleton; // not thread safe
 
-  void logQuery(const char* ns, uint64_t time_micros) {
-    // log format is:
-    // <namespace> <optime>\n
-    if (fprintf(reportFile, "%s %llu\n", ns, time_micros) < 0)
-      printf("error writing to file: %s\n", strerror(errno));
-    fflush(reportFile); // todo: remove once signal handlers are installed
+  void logQuery(mongo::Message &m) {
+    QueryStat stat;
+    stat.startTime = mongo::curTimeMicros64();
+    stat.totalTime = 0;
+
+    // get the query and projection(s?) from the message
+    mongo::DbMessage dbm(m);
+    dbm.pullInt();  // skip nToSkip
+    dbm.pullInt();  // skip nToRetrun
+    stat.signature = dbm.nextJsObj().toString(false, true);
+    while (dbm.moreJSObjs())
+      stat.signature += "\t" + dbm.nextJsObj().toString(false, true);
+
+    queryStats[m.header()->id.get()] = stat;
+  }
+
+  void logResponse(int32_t msgid) {
+    QueryStat &stat = queryStats[msgid];
+    stat.totalTime = mongo::curTimeMicros64() - stat.startTime;
   }
 
 };
