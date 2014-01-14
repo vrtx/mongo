@@ -35,7 +35,7 @@ public:
         logResponse(m.header()->responseTo.get());
         break;
       case mongo::dbQuery:
-        logQuery(m);
+        logQuery(m, host, port);
         break;
       case mongo::dbGetMore:
         // todo: need this before release to ace.
@@ -99,13 +99,14 @@ private:
     uint32_t count;
   };
   typedef mongo::unordered_map<int32_t, QueryStat> QueryMap;
-  typedef mongo::unordered_map<mongo::StringData, AggResults, mongo::StringData::Hasher> ResultsMap;
+  // typedef mongo::unordered_map<mongo::StringData, AggResults, mongo::StringData::Hasher> ResultsMap;
+  typedef mongo::map<mongo::StringData, AggResults> ResultsMap;
   QueryMap queryStats;
   ResultsMap aggResults;
   FILE* reportFile;
   static StatsCollector* singleton; // not thread safe
 
-  void logQuery(mongo::Message &m) {
+  void logQuery(mongo::Message &m, char* host, int port) {
     QueryStat stat;
     stat.startTime = mongo::curTimeMicros64();
     stat.totalTime = 0;
@@ -114,7 +115,9 @@ private:
     mongo::DbMessage dbm(m);
     dbm.pullInt();  // skip nToSkip
     dbm.pullInt();  // skip nToRetrun
-    stat.signature = dbm.nextJsObj().toString(false, true);
+    mongo::stringstream s;
+    s << dbm.nextJsObj().toString(false, true) << " (" << host << ":" << port << ")";
+    stat.signature = s.str();
     while (dbm.moreJSObjs())
       stat.signature += "\t" + dbm.nextJsObj().toString(false, true);
 
