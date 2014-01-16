@@ -31,16 +31,19 @@ public:
   void recordMessage(char* host, int port, mongo::Message& m) {
     switch (m.operation()) {
       case mongo::opReply:
-        // todo: don't log if results are incomplete
-        logResponse(m.header()->responseTo.get());
+        if (m.header()->responseTo.get() > 0 && m.header()->getCursor() == 0)
+          // log when reply indicates results have been exhausted
+          logResponse(m.header()->responseTo.get());
         break;
       case mongo::dbQuery:
+        // log start time
         logQuery(m, host, port);
         break;
       case mongo::dbGetMore:
-        // todo: need this before release to ace.
         break;
       case mongo::dbKillCursors:
+        // mark the query as finished
+        logResponse(m.header()->responseTo.get());
         break;
       default:
         // unhandled operation
@@ -55,11 +58,6 @@ public:
 
   void aggregateResults() {
     printf("aggregating results.\n");
-    // todo: group by could be any one of:
-    //  - literal query
-    //  - query signature
-    //  - host:port
-    //  - dbname
     for (QueryMap::const_iterator i = queryStats.begin(); i != queryStats.end(); ++i) {
       mongo::StringData key(i->second.signature);
       AggResults &queryAgg = aggResults[key];
