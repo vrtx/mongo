@@ -49,6 +49,8 @@
 #include "mongo/util/assert_util.h"
 #include "mongo/util/mongoutils/str.h"
 
+#include "third_party/pcm/cpucounters.h"
+
 /**
  * Fail unconditionally, reporting the given message.
  */

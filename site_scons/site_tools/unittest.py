@@ -25,7 +25,10 @@ def unit_test_list_builder_action(env, target, source):
 def build_cpp_unit_test(env, target, source, **kwargs):
     libdeps = kwargs.get('LIBDEPS', [])
     libdeps.append( '$BUILD_DIR/mongo/unittest/unittest_main' )
-    
+
+    libs = kwargs.get('LIBS', [])
+    libs.append('PcmMsr')
+
     includeCrutch = True
     if "NO_CRUTCH" in kwargs:
         includeCrutch = not kwargs["NO_CRUTCH"]
@@ -34,6 +37,7 @@ def build_cpp_unit_test(env, target, source, **kwargs):
         libdeps.append( '$BUILD_DIR/mongo/unittest/unittest_crutch' )
 
     kwargs['LIBDEPS'] = libdeps
+    kwargs['LIBS'] = libs
 
     result = env.Program(target, source, **kwargs)
     env.RegisterUnitTest(result[0])

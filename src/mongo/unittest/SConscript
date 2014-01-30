@@ -7,7 +7,11 @@ Import("env")
 # 'network', 'foundation' and 'lasterror'.  assert_util.cpp depends on lasterror.cpp which depends
 # on sock.cpp which depends on assert_util.cpp.  Eventually we want to have an assertion library
 # that does not depend on internal server code, and then this can go away.
-env.Library("unittest", ['unittest.cpp', 'temp_dir.cpp'],
+env.Library("unittest", ['unittest.cpp', 'temp_dir.cpp', 'scoped_probe.cpp',
+                         '../../third_party/pcm/cpucounters.cpp',
+                         '../../third_party/pcm/client_bw.cpp',
+                         '../../third_party/pcm/msr.cpp',
+                         '../../third_party/pcm/pci.cpp'],
             LIBDEPS=['$BUILD_DIR/mongo/foundation',
                      '$BUILD_DIR/mongo/lasterror',
                      '$BUILD_DIR/mongo/util/options_parser/options_parser',

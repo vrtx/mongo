@@ -1034,14 +1034,16 @@ env.Library('mocklib', [
     ],
     LIBDEPS=['clientdriver'])
 
-test = testEnv.Install(
-    '#/',
-    testEnv.Program("test",
-                    [ f for f in Glob("dbtests/*.cpp")
+dbtestFiles = [f for f in Glob("dbtests/*.cpp")
                       if not str(f).endswith('framework.cpp') and
                          not str(f).endswith('framework_options.cpp') and
                          not str(f).endswith('framework_options_init.cpp') and
-                         not str(f).endswith('framework_options_test.cpp') ],
+                         not str(f).endswith('framework_options_test.cpp')]
+
+test = testEnv.Install(
+    '#/',
+    testEnv.Program("test",
+                    dbtestFiles,
                     LIBDEPS = [
                        "mutable_bson_test_utils",
                        "mongocommon",
@@ -1056,7 +1058,8 @@ test = testEnv.Install(
                        "mocklib",
                        "db/exec/mock_stage",
                        "$BUILD_DIR/mongo/db/auth/authmocks",
-                       "$BUILD_DIR/mongo/db/query/query"]))
+                       "$BUILD_DIR/mongo/db/query/query"],
+                    LIBS="PcmMsr"))
 
 if len(testEnv.subst('$PROGSUFFIX')):
     testEnv.Alias( "test", "#/${PROGPREFIX}test${PROGSUFFIX}" )
