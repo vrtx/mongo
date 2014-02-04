@@ -3,6 +3,7 @@
 
 #include "mongo/util/timer.h"
 #include "mongo/util/time_support.h"
+#include "mongo/util/version.h"
 
 #include "third_party/pcm/cpucounters.h"
 
@@ -43,6 +44,8 @@ namespace mongo {
             postState = getSystemCounterState();
             // todo: hanlde fstream errors/exceptions
             outFile << "\n{ TestName:            '" << (_name.empty() ? "(unnamed)" : _name) << "',\n"
+                      << "  Version:             '" << mongodVersion() << "',\n"
+                      << "  GitHash:             '" << gitVersion() << "',\n"
                       << "  TestRunTime:         '" << fileName << "',\n"
                       << "  CurTimeUs:           " << curTimeMicros64() << ",\n"
                       << "  WallClockUs:         " << micros << ",\n"
