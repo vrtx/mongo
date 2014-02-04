@@ -10,7 +10,7 @@ OPT= -g -O3
 
 # uncomment if you want to rely on Linux perf support (user needs CAP_SYS_ADMIN privileges)
 ifneq ($(wildcard /usr/include/linux/perf_event.h),)
-OPT+= -DPCM_USE_PERF 
+#OPT+= -DPCM_USE_PERF 
 endif
 
 UNAME:=$(shell uname)

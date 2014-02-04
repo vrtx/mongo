@@ -121,7 +121,7 @@ public:
         umask(0);
         while (1)
         {
-            sem_unlink(globalSemaphoreName); // temporary
+            //sem_unlink(globalSemaphoreName); // temporary
             globalSemaphore = sem_open(globalSemaphoreName, O_CREAT, S_IRWXU | S_IRWXG | S_IRWXO, 1);
             if (SEM_FAILED == globalSemaphore)
             {
@@ -782,7 +782,7 @@ PCM::PCM() :
 #endif
         #endif //end of ifdef _MSC_VER
 
-    std::cout << "Number of physical cores: " << (num_cores/(threads_per_core > 0 ? threads_per_core : 1)) << std::endl;
+    std::cout << "Number of physical cores: " << (num_cores/threads_per_core) << std::endl;
     std::cout << "Number of logical cores: " << num_cores << std::endl;
     std::cout << "Threads (logical cores) per physical core: " << threads_per_core << std::endl;
     std::cout << "Num sockets: " << num_sockets << std::endl;

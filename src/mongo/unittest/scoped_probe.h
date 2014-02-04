@@ -1,6 +1,8 @@
 #include <iostream>
+#include <fstream>
 
 #include "mongo/util/timer.h"
+#include "mongo/util/time_support.h"
 
 #include "third_party/pcm/cpucounters.h"
 
@@ -39,25 +41,36 @@ namespace mongo {
             endTSC = rdtsc();
             unsigned long long micros = timer.micros();
             postState = getSystemCounterState();
-            cout << "\n Test [" << (_name.empty() ? "(unnamed)" : _name) << "]: \n"
-                      << "  Wallclock:              " << micros << "us\n"
-                      << "  Cycles (current core):  " << endTSC - startTSC << "\n"
-                      << "  Cycles (all cores):     " << getInvariantTSC(preState, postState) << "\n"
-                      << "  Instructions per cycle: " << getIPC(preState, postState) << "\n"
-                      << "  Retired Instructions:   " << getInstructionsRetired(preState, postState) << "\n"
-                      << "  L3 Hit Ratio:           " << getL3CacheHitRatio(preState, postState)*100 << "%\n"
-                      << "  L2 Hit Ratio:           " << getL2CacheHitRatio(preState, postState)*100 << "%\n"
-                      << "  MemCtrlr Read:          " << getBytesReadFromMC(preState, postState) << "b\n"
-                      << "  MemCtrlr Written:       " << getBytesWrittenToMC(preState, postState) << "b\n"
-                      << "  MC/QPI traffic ratio:   " << getQPItoMCTrafficRatio(preState, postState)*100 << "%\n";
+            // todo: hanlde fstream errors/exceptions
+            outFile << "\n{ TestName:            '" << (_name.empty() ? "(unnamed)" : _name) << "',\n"
+                      << "  TestRunTime:         '" << fileName << "',\n"
+                      << "  CurTimeUs:           " << curTimeMicros64() << ",\n"
+                      << "  WallClockUs:         " << micros << ",\n"
+                      << "  CoreCycles:          " << endTSC - startTSC << ",\n"
+                      << "  AllCycles:           " << getInvariantTSC(preState, postState) << ",\n"
+                      << "  IPS:                 " << getIPC(preState, postState) << ",\n"
+                      << "  RetiredIns:          " << getInstructionsRetired(preState, postState) << ",\n"
+                      << "  L3HitRatio:          " << getL3CacheHitRatio(preState, postState)*100 << ",\n"
+                      << "  L2HitRatio:          " << getL2CacheHitRatio(preState, postState)*100 << ",\n"
+                      << "  MemCtrlrReadBytes:   " << getBytesReadFromMC(preState, postState) << ",\n"
+                      << "  MemCtrlrWriteBytes:  " << getBytesWrittenToMC(preState, postState) << ",\n"
+                      << "  MCQPITrafficRatio:   " << getQPItoMCTrafficRatio(preState, postState)*100 << "\n},\n";
                       // << "  L3 Hits:      " << getL3CacheHits(preState, postState) << "\n"
                       // << "  L3 Misses:    " << getL3CacheMisses(preState, postState) << "\n"
                       // << "  L2 Hits:      " << getL2CacheHits(preState, postState) << "\n"
                       // << "  L2 Misses:    " << getL2CacheMisses(preState, postState) << "\n"
+            outFile.flush();
+        }
+
+        static std::string generateFileName() {
+            std::stringstream filename;
+            filename << "mprof-" << curTimeMicros64();
+            return filename.str();
         }
 
         static PCM* pcmInstance;
-
+        static std::string fileName;
+        static std::ofstream outFile;
     private:
         std::string _name;
         mongo::Timer timer;

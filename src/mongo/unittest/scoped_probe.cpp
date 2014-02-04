@@ -6,6 +6,9 @@ namespace mongo {
 
         PCM* ScopedProbe::pcmInstance = PCM::getInstance();
 
+        std::string ScopedProbe::fileName = ScopedProbe::generateFileName();
+        std::ofstream ScopedProbe::outFile(ScopedProbe::fileName.c_str(), std::ofstream::out | std::ofstream::trunc);
+
         struct StaticPCMInit {
             static StaticPCMInit* initOrDie() {
                 PCM::ErrorCode status = ScopedProbe::pcmInstance->program();
@@ -13,6 +16,7 @@ namespace mongo {
                 switch (status)
                 {
                     case PCM::Success:
+                        cout << "Initialized PCM." << endl;
                         break;
                     case PCM::MSRAccessDenied:
                         cout << "Access to performance counter monitor denied." << endl;
