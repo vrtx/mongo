@@ -38,6 +38,7 @@
 #include "mongo/logger/log_manager.h"
 #include "mongo/logger/message_event_utf8_encoder.h"
 #include "mongo/logger/message_log_domain.h"
+#include "mongo/unittest/scoped_probe.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/log.h"
 #include "mongo/util/timer.h"
@@ -122,6 +123,7 @@ namespace mongo {
             // special exception here that when thrown does trigger the tear down but is
             // not considered an error.
             try {
+                ScopedProbe p(demangleName(typeid(*this)));
                 _doTest();
             }
             catch (FixtureExceptionForTesting&) {
@@ -178,8 +180,10 @@ namespace mongo {
                 err << tc->getName() << "\t";
 
                 try {
-                    for ( int x=0; x<runsPerTest; x++ )
+                    for ( int x=0; x<runsPerTest; x++ ) {
+                        ScopedProbe p(tc->getName());
                         tc->run();
+                    }
                     passes = true;
                 }
                 catch ( const TestAssertionFailureException& ae ) {
