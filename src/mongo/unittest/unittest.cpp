@@ -87,6 +87,7 @@ namespace mongo {
             try {
                 ScopedProbe p(demangleName(typeid(*this)));
                 _doTest();
+                p.done();
             }
             catch (FixtureExceptionForTesting&) {
                 tearDown();
@@ -144,6 +145,7 @@ namespace mongo {
                     for ( int x=0; x<runsPerTest; x++ ) {
                         ScopedProbe p(tc->getName());
                         tc->run();
+                        p.done();
                     }
                     passes = true;
                 }
