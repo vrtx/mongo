@@ -2,7 +2,7 @@
 
 Import("env")
 
-env.StaticLibrary("unittest", ['unittest.cpp'],
+env.StaticLibrary("unittest", ['unittest.cpp, scoped_probe.cpp'],
                   LIBDEPS=['$BUILD_DIR/mongo/foundation'])
 
 env.StaticLibrary("unittest_main", ['unittest_main.cpp'],
