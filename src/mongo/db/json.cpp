@@ -683,7 +683,7 @@ namespace mongo {
         if (!readToken(RPAREN)) {
             return parseError("Expecting ')'");
         }
-        builder.appendNumber(fieldName, val);
+        builder.appendNumber(fieldName, (long long)val);
         return Status::OK();
     }
 
