@@ -47,7 +47,6 @@ LIBRARY_FLAGS = {
   'gcc': {
     'all': {
       'CCFLAGS':      ['-Wall',
-                       '-Werror',
                        '-W',
                        '-Wno-unused-parameter',
                        '-Woverloaded-virtual',
