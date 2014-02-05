@@ -44,7 +44,7 @@ namespace mongo {
             postState = getSystemCounterState();
             // todo: hanlde fstream errors/exceptions
             outFile << "\n{ TestName:            '" << (_name.empty() ? "(unnamed)" : _name) << "',\n"
-                      << "  Version:             '" << mongodVersion() << "',\n"
+                      << "  Version:             '" << versionString << "',\n"
                       << "  GitHash:             '" << gitVersion() << "',\n"
                       << "  TestRunTime:         '" << fileName << "',\n"
                       << "  CurTimeUs:           " << curTimeMicros64() << ",\n"
