@@ -1,6 +1,7 @@
 #include <iostream>
 #include <fstream>
 
+#include "mongo/db/jsobj.h"
 #include "mongo/util/timer.h"
 #include "mongo/util/time_support.h"
 #include "mongo/util/version.h"
@@ -52,6 +53,9 @@ namespace mongo {
                   << "  Version:             '" << versionString << "',\n"
                   << "  GitHash:             '" << gitVersion() << "',\n"
                   << "  TestRunId:           '" << fileName << "',\n"
+                  << "  Query:               '" << lastQuery << "',\n"
+                  << "  Projection:          '" << (lastProjection != NULL ? *lastProjection : BSON("NONE" << 1)) << "',\n"
+                  << "  Count:               "  << lastCount << ",\n"
                   << "  Success:             "  << (success ? "true" : "false") << ",\n"
                   << "  CurTimeUs:           "  << curTimeMicros64() << ",\n"
                   << "  WallClockUs:         "  << micros << ",\n"
@@ -80,6 +84,10 @@ namespace mongo {
       // static PCM* pcmInstance;
       static std::string fileName;
       static std::ofstream outFile;
+      static int lastCount;
+      // hack: global state for query/projection reporting
+      static BSONObj& lastQuery;
+      static BSONObj* lastProjection;
     private:
       bool success;
       std::string _name;
