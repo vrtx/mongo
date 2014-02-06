@@ -8,8 +8,10 @@ namespace mongo {
         std::string ScopedProbe::fileName = ScopedProbe::generateFileName();
         std::ofstream ScopedProbe::outFile(ScopedProbe::fileName.c_str(), std::ofstream::out | std::ofstream::trunc);
         int ScopedProbe::lastCount = 0;
-        BSONObj temp = BSON("NONE" << 1);
-        BSONObj& ScopedProbe::lastQuery = temp;
+        int ScopedProbe::lastSkip = 0;
+        int ScopedProbe::lastLimit = 0;
+        Query temp = Query("{NONE:1}");
+        Query& ScopedProbe::lastQuery = temp;
         BSONObj* ScopedProbe::lastProjection = NULL;
 
         // struct StaticPCMInit {

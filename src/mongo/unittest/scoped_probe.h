@@ -2,6 +2,7 @@
 #include <fstream>
 
 #include "mongo/db/jsobj.h"
+#include "mongo/client/dbclientinterface.h"
 #include "mongo/util/timer.h"
 #include "mongo/util/time_support.h"
 #include "mongo/util/version.h"
@@ -84,9 +85,11 @@ namespace mongo {
       // static PCM* pcmInstance;
       static std::string fileName;
       static std::ofstream outFile;
+      // hack: global state for query/projection reporting:
       static int lastCount;
-      // hack: global state for query/projection reporting
-      static BSONObj& lastQuery;
+      static int lastSkip;
+      static int lastLimit;
+      static Query& lastQuery;
       static BSONObj* lastProjection;
     private:
       bool success;
