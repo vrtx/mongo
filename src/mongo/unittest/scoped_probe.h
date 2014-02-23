@@ -50,10 +50,11 @@ namespace mongo {
         unsigned long long micros = timer.micros();
         // postState = getSystemCounterState();
         // todo: hanlde fstream errors/exceptions
-        outFile << "\n{ TestName:            '" << (_name.empty() ? "(unnamed)" : _name) << "',\n"
+        outFile << "\n{ TestName:            '" << (_name.empty() ? "(unnamed)" : _name) << "[" << lastIdx << "]',\n"
                   << "  Version:             '" << versionString << "',\n"
                   << "  GitHash:             '" << gitVersion() << "',\n"
                   << "  TestRunId:           '" << fileName << "',\n"
+                  << "  Index:               '" << lastIdx << "',\n"
                   << "  Query:               '" << lastQuery << "',\n"
                   << "  Projection:          '" << (lastProjection != NULL ? *lastProjection : BSON("NONE" << 1)) << "',\n"
                   << "  Count:               "  << lastCount << ",\n"
@@ -91,6 +92,7 @@ namespace mongo {
       static int lastLimit;
       static Query& lastQuery;
       static BSONObj* lastProjection;
+      static string lastIdx;
     private:
       bool success;
       std::string _name;
