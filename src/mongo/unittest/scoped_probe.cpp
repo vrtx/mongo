@@ -13,6 +13,7 @@ namespace mongo {
         Query temp = Query("{NONE:1}");
         Query& ScopedProbe::lastQuery = temp;
         BSONObj* ScopedProbe::lastProjection = NULL;
+        string ScopedProbe::lastIdx = "default";
 
         // struct StaticPCMInit {
         //     static StaticPCMInit* initOrDie() {
