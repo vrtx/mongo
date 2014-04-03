@@ -1,0 +1,40 @@
+/*
+ * Copyright 2013 10gen Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+/*
+    The format:
+      COUNTER( identifier, Category, Name, Description )
+        identifier   - inlined by C++ macro preprocessor
+        Category     - counter category
+        Name         - counter name
+        Description  - counter description
+
+    These are initialized by counters_init()
+*/
+
+COUNTER(op_test1,                  "ops",     "test1",               "test1 operations")
+COUNTER(op_test2,                  "ops",     "test2",               "test2 operations")
+COUNTER(op_test3,                  "ops",     "test3",               "test3 operations")
+COUNTER(op_test4,                  "ops",     "test4",               "test4 operations")
+COUNTER(stage_fetch_advanced,      "stage",   "fetch-advanced",      "fetch stage advanced")
+COUNTER(stage_fetch_invalidates,   "stage",   "fetch-invalidate",    "fetch stage invalidated")
+COUNTER(stage_fetch_iseof,         "stage",   "fetch-iseof",         "fetch stage at eof")
+COUNTER(stage_fetch_needfetch,     "stage",   "fetch-need-fetch",    "fetch stage needs fetch")
+COUNTER(stage_fetch_needtime,      "stage",   "fetch-need-time",     "fetch stage needs time")
+COUNTER(stage_fetch_unyields,      "stage",   "fetch-unyield",       "fetch stage unyields")
+COUNTER(stage_fetch_work,          "stage",   "fetch-work",          "fetch stage work")
+COUNTER(stage_fetch_yields,        "stage",   "fetch-yield",         "fetch stage yields")
+

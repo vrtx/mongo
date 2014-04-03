@@ -671,7 +671,8 @@ serverOnlyFiles = [ "db/curop.cpp",
                     "db/commands/validate.cpp",
                     "db/pipeline/pipeline_d.cpp",
                     "db/pipeline/document_source_cursor.cpp",
-                    "db/driverHelpers.cpp" ]
+                    "db/driverHelpers.cpp",
+                    "util/counters/counters_command_mongod.cpp" ]
 
 # This library exists because some libraries, such as our networking library, need access to server
 # options, but not to the helpers to set them from the command line.  libserver_options_core.a just
@@ -736,6 +737,7 @@ mongosLibraryFiles = [
     "s/version_manager.cpp",
     "s/version_mongos.cpp",
     "s/mongos_persistence_stubs.cpp",
+    "util/counters/counters_command_mongos.cpp"
     ]
 
 env.Library( "mongoscore",
