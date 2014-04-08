@@ -31,6 +31,7 @@
 #include <inttypes.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <stdio.h>
 
 #ifdef __linux__
 #include <sched.h>
@@ -57,10 +58,16 @@ namespace mongo {
 static inline uint32_t get_n_cpu() { return NCPU; }
 static inline uint32_t get_cpu() { return CURCPU; }
 
+enum {
+    mongod = 0,
+    mongos = 1,
+    all = 2
+};
+
 /**
   Extern decl for each counter, one per line from .def file.
 */
-#define COUNTER( ident, Category, Name, Description ) extern counter_t _counter_##ident;
+#define COUNTER( ident, Exec, Category, Name, Description ) extern counter_t _counter_##ident;
 #include "mongo/platform/counters.def"
 #undef COUNTER
 
@@ -68,7 +75,7 @@ static inline uint32_t get_cpu() { return CURCPU; }
   Declare counter enum codes, one per line from .def file.
 */
 enum {
-#define COUNTER( ident, Category, Name, Description ) COUNTER_##ident,
+#define COUNTER( ident, Exec, Category, Name, Description ) COUNTER_##ident,
 #include "mongo/platform/counters.def"
 #undef COUNTER
     LAST_COUNTER
@@ -77,22 +84,22 @@ enum {
 /**
   Declare counter methods, one per line from .def file.
 */
-#define COUNTER( ident, Category, Name, Description ) \
+#define COUNTER( ident, Exec, Category, Name, Description ) \
 	static inline void counter_##ident##_inc( ) { \
         volatile unsigned cpu; \
-        __asm__ __volatile__("rdtscp": "=c"(cpu)); \
+        __asm__ __volatile__("rdtscp": "=c"(cpu) : : "%rcx", "%rdx"); \
 	_counter_##ident.cpus[cpu].slots[COUNTER_##ident % SLOTS_PER_CACHELINE] += 1; } \
 	static inline void counter_##ident##_dec( ) { \
         volatile unsigned cpu; \
-        __asm__ __volatile__("rdtscp": "=c"(cpu)); \
+        __asm__ __volatile__("rdtscp": "=c"(cpu) : : "%rcx", "%rdx"); \
 	_counter_##ident.cpus[cpu].slots[COUNTER_##ident % SLOTS_PER_CACHELINE] -= 1; } \
 	static inline void counter_##ident##_add( int64_t val ) { \
         volatile unsigned cpu; \
-        __asm__ __volatile__("rdtscp": "=c"(cpu)); \
+        __asm__ __volatile__("rdtscp": "=c"(cpu) : : "%rcx", "%rdx"); \
 	_counter_##ident.cpus[cpu].slots[COUNTER_##ident % SLOTS_PER_CACHELINE] += val; } \
 	static inline int64_t counter_##ident##_get( ) { \
         volatile unsigned cpu; \
-        __asm__ __volatile__("rdtscp": "=c"(cpu)); \
+        __asm__ __volatile__("rdtscp": "=c"(cpu) : : "%rcx", "%rdx"); \
 	return _counter_##ident.cpus[cpu].slots[COUNTER_##ident % SLOTS_PER_CACHELINE]; }
 #include "mongo/platform/counters.def"
 #undef COUNTER

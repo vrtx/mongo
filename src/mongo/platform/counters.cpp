@@ -45,6 +45,7 @@ typedef struct {
     char category[24];
     char name[32];
     char description[64];
+    char executable;
 } counter_info_t;
 #pragma pack()
 
@@ -62,20 +63,9 @@ typedef struct {
 /*
      Declare the counters using 'ident', one per line from .def file
 */
-#define COUNTER(ident, Category, Name, Description) counter_t _counter_##ident;
+#define COUNTER(ident, Exec, Category, Name, Description) counter_t _counter_##ident;
 #include "mongo/platform/counters.def"
 #undef COUNTER
-
-/**
-* counters_use_shm:
-*
-* Checks to see if counters should be exported over a shared memory segment.
-*
-* Returns: TRUE if SHM is to be used.
-*/
-static bool counters_use_shm(void) {
-    return !getenv("MONGOC_DISABLE_SHM");
-}
 
 /**
 * counters_calc_size:
@@ -114,6 +104,7 @@ static size_t counters_calc_size(void) {
 * Returns: The offset to the data for the counters values.
 */
 static size_t counters_register( counters_t *counters,
+                                        char exec,
                                         uint32_t num,
                                         const char *category,
                                         const char *name,
@@ -138,7 +129,7 @@ static size_t counters_register( counters_t *counters,
     infos->category[sizeof infos->category-1] = '\0';
     infos->name[sizeof infos->name-1] = '\0';
     infos->description[sizeof infos->description-1] = '\0';
-
+    infos->executable = exec;
     return infos->offset;
 }
 
@@ -163,7 +154,7 @@ static void counters_init() {
     size = counters_calc_size();
     segment = (char *)malloc(size);
     infos_size = LAST_COUNTER * sizeof *info;
-
+    printf("counter segment @: %p\n", segment);
     counters = (counters_t *)segment;
     counters->size = size;
     counters->n_cpu = get_n_cpu();
@@ -175,8 +166,8 @@ static void counters_init() {
 /**
      Register each of the counters, one per line from the .def file.
 */
-#define COUNTER(ident, Category, Name, Desc) \
-off = counters_register(counters, COUNTER_##ident, Category, Name, Desc); \
+#define COUNTER(ident, Exec, Category, Name, Desc) \
+off = counters_register(counters, Exec, COUNTER_##ident, Category, Name, Desc); \
 _counter_##ident.cpus = (counter_slots_t*)(segment + off);
 #include "mongo/platform/counters.def"
 #undef COUNTER

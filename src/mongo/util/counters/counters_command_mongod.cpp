@@ -27,6 +27,7 @@
 */
 
 #include "mongo/util/counters/counters_command.h"
+#include "mongo/platform/counters_internal.h"
 
 namespace mongo {
 
@@ -54,7 +55,12 @@ namespace mongo {
                                     string& errmsg,
                                     BSONObjBuilder& result,
                                     bool fromRepl) {
+
             result.append("type", "mongod");
+            mongo::counter_op_test1_inc();
+            uint64_t t = mongo::counter_op_test1_get();
+            printf("t: %ld\n", t);
+            // result.append("op_test1", (long long)t);
             return true;
 
         }

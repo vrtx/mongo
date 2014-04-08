@@ -18,6 +18,7 @@
     The format:
       COUNTER( identifier, Category, Name, Description )
         identifier   - inlined by C++ macro preprocessor
+        Executable	 - executable file(s) for thisc ounter (e.g. mongo'd', mongo's', 'a'll)
         Category     - counter category
         Name         - counter name
         Description  - counter description
@@ -25,16 +26,16 @@
     These are initialized by counters_init()
 */
 
-COUNTER(op_test1,                  "ops",     "test1",               "test1 operations")
-COUNTER(op_test2,                  "ops",     "test2",               "test2 operations")
-COUNTER(op_test3,                  "ops",     "test3",               "test3 operations")
-COUNTER(op_test4,                  "ops",     "test4",               "test4 operations")
-COUNTER(stage_fetch_advanced,      "stage",   "fetch-advanced",      "fetch stage advanced")
-COUNTER(stage_fetch_invalidates,   "stage",   "fetch-invalidate",    "fetch stage invalidated")
-COUNTER(stage_fetch_iseof,         "stage",   "fetch-iseof",         "fetch stage at eof")
-COUNTER(stage_fetch_needfetch,     "stage",   "fetch-need-fetch",    "fetch stage needs fetch")
-COUNTER(stage_fetch_needtime,      "stage",   "fetch-need-time",     "fetch stage needs time")
-COUNTER(stage_fetch_unyields,      "stage",   "fetch-unyield",       "fetch stage unyields")
-COUNTER(stage_fetch_work,          "stage",   "fetch-work",          "fetch stage work")
-COUNTER(stage_fetch_yields,        "stage",   "fetch-yield",         "fetch stage yields")
+COUNTER(op_test1,                'd', "ops",   "test1",            "test1 operations")
+COUNTER(op_test2,                's', "ops",   "test2",            "test2 operations")
+COUNTER(op_test3,                'a', "ops",   "test3",            "test3 operations")
+COUNTER(op_test4,                'a', "ops",   "test4",            "test4 operations")
+COUNTER(stage_fetch_advanced,    'd', "stage", "fetch-advanced",   "fetch stage advanced")
+COUNTER(stage_fetch_invalidates, 'd', "stage", "fetch-invalidate", "fetch stage invalidated")
+COUNTER(stage_fetch_iseof,       'd', "stage", "fetch-iseof",      "fetch stage at eof")
+COUNTER(stage_fetch_needfetch,   'd', "stage", "fetch-need-fetch", "fetch stage needs fetch")
+COUNTER(stage_fetch_needtime,    'd', "stage", "fetch-need-time",  "fetch stage needs time")
+COUNTER(stage_fetch_unyields,    'd', "stage", "fetch-unyield",    "fetch stage unyields")
+COUNTER(stage_fetch_work,        'd', "stage", "fetch-work",       "fetch stage work")
+COUNTER(stage_fetch_yields,      'd', "stage", "fetch-yield",      "fetch stage yields")
 
