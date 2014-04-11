@@ -1,4 +1,8 @@
+#pragma once
+
 #include <stdint.h>
+
+#include "core_counter_pool.h"
 
 namespace mongo {
 
@@ -28,15 +32,13 @@ namespace mongo {
         inline CoreCounter& operator-=(CoreCounter&);
         inline int64_t get() const;
     private:
-        uint16_t getCurrentCore() const;    // todo: inline
+        uint32_t getCurrentCore() const;    // todo: inline
         int64_t value;
     };
 #pragma pack()
 
-
     CoreCounter& CoreCounter::operator++() {
-        ++value;
-        // printf("[++] pool: %p, counter value: %llu, this: %p\n", CoreCounterPool::getBase(), value, this);
+        ++(*reinterpret_cast<int64_t*>(reinterpret_cast<intptr_t>(this) | (getCurrentCore() << CoreCounterPool::getCoreOffsetBits())));
         return *this;
     }
 
@@ -45,8 +47,10 @@ namespace mongo {
     }
 
     int64_t CoreCounter::get() const {
-        // todo:
-        return value;
+        int64_t total = 0;
+        for (unsigned i = 0; i < CoreCounterPool::getNumCores(); ++i)
+            total += (*reinterpret_cast<int64_t*>(reinterpret_cast<intptr_t>(this) | (i << CoreCounterPool::getCoreOffsetBits())));
+        return total;
     }
 
 }
