@@ -9,10 +9,10 @@ namespace mongo {
 #if defined(_WIN32)
         // todo:
         return ::GetCurrentProcessorNumberEx();
+
 #elif defined(__linux__) || defined(__sunos__)
-        uint32_t core = ::sched_getcpu();
-        printf("current core: %u\n", core);
-        return core;
+        return ::sched_getcpu();
+
 #elif defined(__APPLE__)
         uint32_t core = 0;
         // read the processor id from ecx
@@ -20,6 +20,7 @@ namespace mongo {
                       : "=c"(core)
                       :
                       : "%rax", "%rcx", "%rdx");
+        // todo: always returns core 0...  wtf?
         printf("current core: %u\n", core);
         return core;
 #endif

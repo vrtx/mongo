@@ -8,7 +8,7 @@ namespace mongo {
 
     class CoreCounter;
 
-    class CoreCounterPool {
+    class CoreCounterArena {
     public:
         static void init();
         static CoreCounter& createCounter();

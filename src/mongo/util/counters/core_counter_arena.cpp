@@ -1,13 +1,13 @@
 #include <new>
 #include <string.h>
 
-#include "mongo/util/counters/core_counter_pool.h"
+#include "mongo/util/counters/core_counter_arena.h"
 #include "mongo/util/counters/core_counter.h"
 #include "mongo/util/processinfo.h"
 
 namespace mongo {
 
-    void CoreCounterPool::init() {
+    void CoreCounterArena::init() {
         ProcessInfo p;
         ncores = p.getNumCores();
         allocSize = ncores * slotsPerCore * sizeof(uint64_t);
@@ -18,13 +18,13 @@ namespace mongo {
         ::memset(counterPool, 0, allocSize);
     }
 
-    CoreCounter& CoreCounterPool::createCounter() {
+    CoreCounter& CoreCounterArena::createCounter() {
         uint64_t slot = nextCounterSlot++;
         return *(new (counterPool + slot) CoreCounter(slot));
     }
 
     // Round an integer up to the nearest power of 2 which is >= n
-    uint64_t CoreCounterPool::roundUpToPow2(uint64_t n) {
+    uint64_t CoreCounterArena::roundUpToPow2(uint64_t n) {
         invariant(n > 0);
         // bitwise copy the highest set bits to all lower bits, then increment
         // n so the set bits carry over to the next highest bit.  Based on
@@ -39,9 +39,9 @@ namespace mongo {
         return ++n;
     }
 
-    uint64_t* CoreCounterPool::counterPool = NULL;
-    unsigned CoreCounterPool::ncores = 0;
-    unsigned CoreCounterPool::allocSize = 0;
-    AtomicUInt CoreCounterPool::nextCounterSlot;
+    uint64_t* CoreCounterArena::counterPool = NULL;
+    unsigned CoreCounterArena::ncores = 0;
+    unsigned CoreCounterArena::allocSize = 0;
+    AtomicUInt CoreCounterArena::nextCounterSlot;
 
 }

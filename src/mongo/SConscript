@@ -341,7 +341,7 @@ env.CppUnitTest("processinfo_test",
 
 env.Library("corecounter",
             ["util/counters/core_counter.cpp",
-             "util/counters/core_counter_pool.cpp"],
+             "util/counters/core_counter_arena.cpp"],
             LIBDEPS=["processinfo"])
 
 env.CppUnitTest("core_counter_test",
