@@ -339,6 +339,15 @@ env.CppUnitTest("processinfo_test",
                 ["util/processinfo_test.cpp"],
                 LIBDEPS=["processinfo"])
 
+env.Library("corecounter",
+            ["util/counters/core_counter.cpp",
+             "util/counters/core_counter_pool.cpp"],
+            LIBDEPS=["processinfo"])
+
+env.CppUnitTest("core_counter_test",
+                "util/counters/core_counter_test.cpp",
+                LIBDEPS=["corecounter"])
+
 env.Library("server_parameters",
             ["db/server_parameters.cpp"],
             LIBDEPS=["foundation","bson"])
