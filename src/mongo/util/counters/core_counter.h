@@ -15,19 +15,19 @@ namespace mongo {
     //
     // Memory layout is:
     //
-    //    pool[core1]: [cntr1][cntr2][cntr3][cntr4][cntr5][cntr6][cntr7][cntr8]
-    //                 [cntr9][cntrA][cntrB][cntrC][cntrD][cntrE] ...   [cntrN]
+    //    arena[core1]: [cntr1][cntr2][cntr3][cntr4][cntr5][cntr6][cntr7][cntr8]
+    //                  [cntr9][cntrA][cntrB][cntrC][cntrD][cntrE] ...   [cntrN]
     //    ... 
-    //    pool[coreN]: [cntr1][cntr2][cntr3][cntr4][cntr5][cntr6][cntr7][cntr8]
-    //                 [cntr9][cntrA][cntrB][cntrC][cntrD][cntrE] ...   [cntrN]
+    //    arena[coreN]: [cntr1][cntr2][cntr3][cntr4][cntr5][cntr6][cntr7][cntr8]
+    //                  [cntr9][cntrA][cntrB][cntrC][cntrD][cntrE] ...   [cntrN]
     //
-    // pool[0] is aligned to the ^2 >= ncores * slotsPerCore * sizeof(uint64_t).
-    // pool[n] is aligned to the ^2 >= slotsPerCore * sizeof(uint64_t)
+    // arena[0] is aligned to the ^2 >= ncores * slotsPerCore * sizeof(uint64_t).
+    // arena[n] is aligned to the ^2 >= slotsPerCore * sizeof(uint64_t)
 
 #pragma pack(1)
     class CoreCounter {
     public:
-        inline CoreCounter(uint64_t slot) : value(0) { }
+        inline CoreCounter(int64_t* slot) : value(slot) { }
         inline CoreCounter& operator++();    // ++prefix
         inline CoreCounter& operator++(int); // postfix++
         inline CoreCounter& operator--();    // --prefix
@@ -39,12 +39,12 @@ namespace mongo {
         inline int64_t get() const;
     private:
         uint32_t getCurrentCore() const;    // todo: inline
-        int64_t value;
+        int64_t* value;
     };
 #pragma pack()
 
     CoreCounter& CoreCounter::operator++() {
-        ++(*reinterpret_cast<int64_t*>(reinterpret_cast<intptr_t>(this) | (getCurrentCore() << CoreCounterArena::getCoreOffsetBits())));
+        ++(*reinterpret_cast<int64_t*>(reinterpret_cast<intptr_t>(value) | (getCurrentCore() << CoreCounterArena::getCoreOffsetBits())));
         return *this;
     }
 
@@ -55,7 +55,7 @@ namespace mongo {
     int64_t CoreCounter::get() const {
         int64_t total = 0;
         for (unsigned i = 0; i < CoreCounterArena::getNumCores(); ++i)
-            total += (*reinterpret_cast<int64_t*>(reinterpret_cast<intptr_t>(this) | (i << CoreCounterArena::getCoreOffsetBits())));
+            total += (*reinterpret_cast<int64_t*>(reinterpret_cast<intptr_t>(value) | (i << CoreCounterArena::getCoreOffsetBits())));
         return total;
     }
 

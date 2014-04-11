@@ -17,8 +17,8 @@ namespace mongo {
 
     TEST(CoreCounterTests, BasicOperatorInc) {
         CoreCounterArena::init();
-        CoreCounter& cntr1 = CoreCounterArena::createCounter();
-        CoreCounter& cntr2 = CoreCounterArena::createCounter();
+        CoreCounter cntr1 = CoreCounterArena::createCounter();
+        CoreCounter cntr2 = CoreCounterArena::createCounter();
 
         ASSERT_EQUALS(cntr1.get(), 0LL);
         cntr1++;
@@ -37,7 +37,7 @@ namespace mongo {
     TEST(CoreCounterTests, MultiThreadedBasicInc) {
         CoreCounterArena::init();
         for (int j = 0; j < 256; ++j) {
-            CoreCounter& cntr = CoreCounterArena::createCounter();
+            CoreCounter cntr = CoreCounterArena::createCounter();
             pthread_t threads[100];
             for (int i = 0; i < 100; ++i) {
                 pthread_create(&threads[i], NULL, basicIncTestThread, &cntr);

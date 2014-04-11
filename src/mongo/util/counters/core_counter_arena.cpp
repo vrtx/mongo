@@ -10,17 +10,16 @@ namespace mongo {
     void CoreCounterArena::init() {
         ProcessInfo p;
         ncores = p.getNumCores();
-        allocSize = ncores * slotsPerCore * sizeof(uint64_t);
-        int err = ::posix_memalign(reinterpret_cast<void**>(&counterPool),
+        allocSize = ncores * slotsPerCore * sizeof(int64_t);
+        int err = ::posix_memalign(reinterpret_cast<void**>(&counterArenas),
                                    roundUpToPow2(allocSize),
                                    allocSize);
         fassert(17431, err == 0);
-        ::memset(counterPool, 0, allocSize);
+        ::memset(counterArenas, 0, allocSize);
     }
 
-    CoreCounter& CoreCounterArena::createCounter() {
-        uint64_t slot = nextCounterSlot++;
-        return *(new (counterPool + slot) CoreCounter(slot));
+    CoreCounter CoreCounterArena::createCounter() {
+        return CoreCounter(counterArenas + nextCounterSlot++);
     }
 
     // Round an integer up to the nearest power of 2 which is >= n
@@ -39,7 +38,7 @@ namespace mongo {
         return ++n;
     }
 
-    uint64_t* CoreCounterArena::counterPool = NULL;
+    int64_t* CoreCounterArena::counterArenas = NULL;
     unsigned CoreCounterArena::ncores = 0;
     unsigned CoreCounterArena::allocSize = 0;
     AtomicUInt CoreCounterArena::nextCounterSlot;
