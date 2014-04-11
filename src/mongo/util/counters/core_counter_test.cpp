@@ -3,6 +3,7 @@
 #include "mongo/util/counters/core_counter.h"
 #include "mongo/util/counters/core_counter_arena.h"
 #include "mongo/unittest/unittest.h"
+#include "mongo/bson/util/atomic_int.h"
 
 namespace mongo {
 
@@ -14,6 +15,38 @@ namespace mongo {
         (*cntr)++;
         return NULL;
     }
+
+    class BasicPerfTestHelper {
+    public:
+        static CoreCounter coreCounters[1024];
+        static AtomicUInt atomicCounters[1024];
+
+        static void* init() {
+            for (int i = 0; i < 1024; ++i) {
+                coreCounters[i] = CoreCounterArena::createCounter();
+            }
+            return NULL;
+        }
+        static void* incCoreCounters(void*) {
+            for (int j = 0; j < 1024 * 40; j++) {
+                for (int i = 0; i < 1024; ++i) {
+                    coreCounters[i]++;
+                }
+            }
+            return NULL;
+        }
+        static void* incAtomicCounters(void*) {
+            for (int j = 0; j < 1024 * 40; j++) {
+                for (int i = 0; i < 1024; ++i) {
+                    atomicCounters[i]++;
+                }
+            }
+            return NULL;
+        }
+    };
+    CoreCounter BasicPerfTestHelper::coreCounters[1024];
+    AtomicUInt BasicPerfTestHelper::atomicCounters[1024];
+    const int nThreads =  10;
 
     TEST(CoreCounterTests, BasicOperatorInc) {
         CoreCounterArena::init();
@@ -49,5 +82,30 @@ namespace mongo {
         }
     }
 
+    TEST(CoreCounterPerfTests, CoreCounterPerfTest) {
+        CoreCounterArena::init();
+        BasicPerfTestHelper::init();
+        pthread_t threads[nThreads];
+        for (int i = 0; i < nThreads; ++i) {
+            pthread_create(&threads[i], NULL, BasicPerfTestHelper::incCoreCounters, NULL);
+        }
+        for (int i = 0; i < nThreads; ++i) {
+            pthread_join(threads[i], NULL);
+        }
+        ASSERT_EQUALS(BasicPerfTestHelper::coreCounters[0].get(), 1024 * 40 * nThreads);
+    }
+
+    TEST(AtomicCounterPerfTests, AtomicCounterPerfTest) {
+        CoreCounterArena::init();
+        BasicPerfTestHelper::init();
+        pthread_t threads[nThreads];
+        for (int i = 0; i < nThreads; ++i) {
+            pthread_create(&threads[i], NULL, BasicPerfTestHelper::incAtomicCounters, NULL);
+        }
+        for (int i = 0; i < nThreads; ++i) {
+            pthread_join(threads[i], NULL);
+        }
+        ASSERT_EQUALS(BasicPerfTestHelper::atomicCounters[0], 1024 * 40 * nThreads);
+    }
 
 }
