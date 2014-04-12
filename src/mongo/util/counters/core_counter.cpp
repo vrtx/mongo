@@ -35,7 +35,7 @@ namespace mongo {
 
     uint32_t CoreCounter::getCurrentCore() const {
 #if defined(_WIN32)
-        // todo:
+        // WARNING: UNTESTED!
         return ::GetCurrentProcessorNumberEx();
 
 #elif defined(__linux__) || defined(__sunos__)

@@ -47,7 +47,7 @@ namespace mongo {
     //
     //    arena[core1]: [cntr1][cntr2][cntr3][cntr4][cntr5][cntr6][cntr7][cntr8]
     //                  [cntr9][cntrA][cntrB][cntrC][cntrD][cntrE] ...   [cntrN]
-    //    ... 
+    //    ...
     //    arena[coreN]: [cntr1][cntr2][cntr3][cntr4][cntr5][cntr6][cntr7][cntr8]
     //                  [cntr9][cntrA][cntrB][cntrC][cntrD][cntrE] ...   [cntrN]
     //
@@ -61,7 +61,7 @@ namespace mongo {
     //          2) allocate new arenas when full
     //
     //       Once a proper allocator has been implemented, the factory-esque nature
-    //       of this class should probably be replaced.
+    //       of this class should probably be revisited.
 
     class CoreCounterArena {
     public:
