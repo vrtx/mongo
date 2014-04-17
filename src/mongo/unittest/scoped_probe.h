@@ -1,5 +1,6 @@
 #include <iostream>
 #include <fstream>
+#include <map>
 
 #include "mongo/db/jsobj.h"
 #include "mongo/client/dbclientinterface.h"
@@ -31,22 +32,30 @@ namespace mongo {
       init();
     }
 
-    void init() {
-      startTSC = rdtsc();
-      success = false;
-    }
-
     void done() {
       success = true;
+      recordEndTime();
+    }
+
+    void setMetric(string name, int64_t value) {
+      metrics[name] = value;
     }
 
     ~ScopedProbe() {
-      endTSC = rdtsc();
-      unsigned long long micros = timer.micros();
-      std::cout << "\n{ TestName:            '" << (_name.empty() ? "(unnamed)" : _name) << "',\n"
-                << "  Success:             "  << (success ? "true" : "false") << ",\n"
-                << "  WallClockUs:         "  << micros << ",\n"
-                << "  CoreCycles:          "  << endTSC - startTSC << "\n},";
+      if (!success) recordEndTime();
+
+      std::cout << std::endl
+                << "{" << std::endl
+                << "  TestName: \t\t'" << (_name.empty() ? "(unnamed)" : _name) << "'," << std::endl
+                << "  Success:  \t\t"  << (success ? "true" : "false") << "," << std::endl;
+      for (MetricMap::const_iterator it = metrics.begin();
+           it != metrics.end();
+           ++it) {
+        std::cout << "  " << it->first << ": \t\t" << it->second << "," << std::endl;
+      }
+      std::cout << "  WallClockUs: \t\t"  << endMicros << "," << std::endl
+                << "  CoreCycles:  \t\t"  << endTSC - startTSC << std::endl
+                << "}," << std::endl;
                 // << "  AllCycles:           " << getInvariantTSC(preState, postState) << ",\n"
                 // << "  IPS:                 " << getIPC(preState, postState) << ",\n"
                 // << "  RetiredIns:          " << getInstructionsRetired(preState, postState) << ",\n"
@@ -65,12 +74,23 @@ namespace mongo {
     bool success;
     std::string _name;
     mongo::Timer timer;
-    int64_t startWallTime;
-    int64_t endWallTime;
     int64_t startTSC;
     int64_t endTSC;
+    uint64_t endMicros;
+    typedef std::map<string, int> MetricMap;
+    MetricMap metrics;
 
-    // get timestamp counter.  todo: verify availability/stability at runtime.
+    void init() {
+      startTSC = rdtsc();
+      success = false;
+    }
+
+    void recordEndTime() {
+      endTSC = rdtsc();
+      endMicros = timer.micros();
+    }
+
+    // get timestamp counter
     inline uint64_t rdtsc() {
 #if defined(__i386__)
       uint32_t ret;
