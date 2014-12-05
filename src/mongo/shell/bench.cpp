@@ -139,6 +139,7 @@ namespace mongo {
         hideResults = true;
         handleErrors = false;
         hideErrors = false;
+        reportInterval = 0;
 
         trapPattern.reset();
         noTrapPattern.reset();
@@ -179,6 +180,8 @@ namespace mongo {
             this->handleErrors = args["handleErrors"].trueValue();
         if ( ! args["hideErrors"].eoo() )
             this->hideErrors = args["hideErrors"].trueValue();
+        if ( args["reportInterval"].isNumber() )
+            this->reportInterval = args["reportInterval"].number();
         if ( ! args["throwGLE"].eoo() )
             this->throwGLE = args["throwGLE"].trueValue();
         if ( ! args["breakOnTrap"].eoo() )
@@ -421,8 +424,11 @@ namespace mongo {
                     else if ( op == "command" ) {
 
                         BSONObj result;
-                        conn->runCommand( ns, fixQuery( e["command"].Obj(), bsonTemplateEvaluator ),
-                                          result, e["options"].numberInt() );
+                        {
+                            BenchRunEventTrace _bret(&_stats.commandCounter);
+                            conn->runCommand( ns, fixQuery( e["command"].Obj(), bsonTemplateEvaluator ),
+                                              result, e["options"].numberInt() );
+                        }
 
                         if( check ){
                             int err = scope->invoke( scopeFunc , 0 , &result,  1000 * 60 , false );
@@ -703,6 +709,8 @@ namespace mongo {
                 if (delay > 0)
                     sleepmillis( delay );
 
+                if (timer.seconds() >= _config->reportInterval * (_intervals.size() + 1))
+                    _intervals.push_back(_stats.getTotal());
             }
         }
 
@@ -886,6 +894,48 @@ namespace mongo {
          appendAverageMicrosIfAvailable(buf, "updateLatencyAverageMicros", stats.updateCounter);
          appendAverageMicrosIfAvailable(buf, "queryLatencyAverageMicros", stats.queryCounter);
 
+        // NOTE: workers are not guaranteed to have the same number of buckets (due to
+        //       variation in thread execution time).  To ensure intervals are accurate,
+        //       we must use the lowest number of buckets from all threads.
+        unsigned long nIntervals = std::numeric_limits<int>::max();
+        for (unsigned long i = 0; i < runner->_workers.size(); ++i)
+            nIntervals = std::min(nIntervals, runner->_workers[i]->_intervals.size());
+
+        // get operation count per interval from each worker
+        vector<uint64_t> totalOpsAtInterval(nIntervals, 0);
+        for (unsigned long i = 0; i < runner->_workers.size(); ++i) {
+            unsigned long intervalCount = 0;
+            int total = 0;
+            for (vector<uint64_t>::const_iterator interval = runner->_workers[i]->_intervals.begin();
+                interval != runner->_workers[i]->_intervals.end();
+                ++interval, ++intervalCount) {
+
+                if (intervalCount + 1 > nIntervals)
+                    // this run has more than the minimum common interval count
+                    break;
+
+                totalOpsAtInterval[intervalCount] += *interval - total;
+                total = *interval;
+            }
+        }
+
+        // calculate throughput per interval
+        vector<int> throughputPerInterval;
+        int interval = 0;
+        for (vector<uint64_t>::const_iterator it = totalOpsAtInterval.begin();
+             it != totalOpsAtInterval.end();
+             ++it, ++interval) {
+            throughputPerInterval.push_back(totalOpsAtInterval[interval] /
+                                            runner->_config->reportInterval);
+        }
+
+        BSONArrayBuilder a;
+        for (vector<int>::const_iterator i = throughputPerInterval.begin();
+            i != throughputPerInterval.end();
+            ++i) {
+            a << *i;
+        }
+
          {
              BSONObjIterator i( after );
              while ( i.more() ) {
@@ -897,6 +947,7 @@ namespace mongo {
              }
          }
 
+         buf.append("throughputPerInterval", a.arr());
          BSONObj zoo = buf.obj();
 
          delete runner;

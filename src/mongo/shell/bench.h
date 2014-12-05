@@ -100,6 +100,11 @@ namespace mongo {
          */
         double seconds;
 
+        /**
+         * Number of seconds to wait before capturing each time series metric.
+         */
+        double reportInterval;
+
         bool hideResults;
         bool handleErrors;
         bool hideErrors;
@@ -241,6 +246,16 @@ namespace mongo {
         BenchRunEventCounter insertCounter;
         BenchRunEventCounter deleteCounter;
         BenchRunEventCounter queryCounter;
+        BenchRunEventCounter commandCounter;
+
+        uint64_t getTotal() const {
+            return findOneCounter.getNumEvents() +
+                   updateCounter.getNumEvents() +
+                   insertCounter.getNumEvents() +
+                   deleteCounter.getNumEvents() +
+                   commandCounter.getNumEvents() +
+                   queryCounter.getNumEvents();
+        }
 
         std::map<std::string, long long> opcounters;
         std::vector<BSONObj> trappedErrors;
@@ -339,6 +354,7 @@ namespace mongo {
          */
         const BenchRunStats &stats() const { return _stats; }
 
+        vector<uint64_t> _intervals; // number of operations per interval
     private:
         /// The main method of the worker, executed inside the thread launched by start().
         void run();
